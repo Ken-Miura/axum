@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - None.
 
+# 0.2.4 (10. September, 2021)
+
+- Document using `StreamExt::split` with `WebSocket` ([#291])
+- Document adding middleware to multiple groups of routes ([#293])
+
+[#291]: https://github.com/tokio-rs/axum/pull/291
+[#293]: https://github.com/tokio-rs/axum/pull/293
+
 # 0.2.3 (26. August, 2021)
 
 - **fixed:** Fix accidental breaking change introduced by internal refactor.
@@ -18,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **fixed:** Fix URI captures matching empty segments. This means requests with
   URI `/` will no longer be matched by `/:key` ([#264](https://github.com/tokio-rs/axum/pull/264))
-- **fixed:** Remove needless trait bounds from `Router::boxed` ([#264](https://github.com/tokio-rs/axum/pull/264))
+- **fixed:** Remove needless trait bounds from `Router::boxed` ([#269](https://github.com/tokio-rs/axum/pull/269))
 
 # 0.2.1 (24. August, 2021)
 
