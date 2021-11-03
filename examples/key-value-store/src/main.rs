@@ -8,17 +8,17 @@
 
 use axum::{
     body::Bytes,
+    error_handling::HandleErrorLayer,
     extract::{ContentLengthLimit, Extension, Path},
-    handler::{delete, get, Handler},
+    handler::Handler,
     http::StatusCode,
     response::IntoResponse,
-    routing::BoxRoute,
+    routing::{delete, get},
     Router,
 };
 use std::{
     borrow::Cow,
     collections::HashMap,
-    convert::Infallible,
     net::SocketAddr,
     sync::{Arc, RwLock},
     time::Duration,
@@ -52,16 +52,15 @@ async fn main() {
         // Add middleware to all routes
         .layer(
             ServiceBuilder::new()
+                // Handle errors from middleware
+                .layer(HandleErrorLayer::new(handle_error))
                 .load_shed()
                 .concurrency_limit(1024)
                 .timeout(Duration::from_secs(10))
                 .layer(TraceLayer::new_for_http())
                 .layer(AddExtensionLayer::new(SharedState::default()))
                 .into_inner(),
-        )
-        // Handle errors from middleware
-        .handle_error(handle_error)
-        .check_infallible();
+        );
 
     // Run our app with hyper
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -109,7 +108,7 @@ async fn list_keys(Extension(state): Extension<SharedState>) -> String {
         .join("\n")
 }
 
-fn admin_routes() -> Router<BoxRoute> {
+fn admin_routes() -> Router {
     async fn delete_all_keys(Extension(state): Extension<SharedState>) {
         state.write().unwrap().db.clear();
     }
@@ -123,23 +122,22 @@ fn admin_routes() -> Router<BoxRoute> {
         .route("/key/:key", delete(remove_key))
         // Require bearer auth for all admin routes
         .layer(RequireAuthorizationLayer::bearer("secret-token"))
-        .boxed()
 }
 
-fn handle_error(error: BoxError) -> Result<impl IntoResponse, Infallible> {
+fn handle_error(error: BoxError) -> impl IntoResponse {
     if error.is::<tower::timeout::error::Elapsed>() {
-        return Ok((StatusCode::REQUEST_TIMEOUT, Cow::from("request timed out")));
+        return (StatusCode::REQUEST_TIMEOUT, Cow::from("request timed out"));
     }
 
     if error.is::<tower::load_shed::error::Overloaded>() {
-        return Ok((
+        return (
             StatusCode::SERVICE_UNAVAILABLE,
             Cow::from("service is overloaded, try again later"),
-        ));
+        );
     }
 
-    Ok((
+    (
         StatusCode::INTERNAL_SERVER_ERROR,
         Cow::from(format!("Unhandled internal error: {}", error)),
-    ))
+    )
 }

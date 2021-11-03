@@ -7,13 +7,14 @@
 //! ```
 
 use axum::{
+    error_handling::HandleErrorExt,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         TypedHeader,
     },
-    handler::get,
     http::StatusCode,
     response::IntoResponse,
+    routing::{get, service_method_routing as service},
     Router,
 };
 use std::net::SocketAddr;
@@ -32,16 +33,15 @@ async fn main() {
 
     // build our application with some routes
     let app = Router::new()
-        .nest(
-            "/",
-            axum::service::get(
+        .fallback(
+            service::get(
                 ServeDir::new("examples/websockets/assets").append_index_html_on_directories(true),
             )
             .handle_error(|error: std::io::Error| {
-                Ok::<_, std::convert::Infallible>((
+                (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Unhandled internal error: {}", error),
-                ))
+                )
             }),
         )
         // routes are matched from bottom to top, so we have to put `nest` at the

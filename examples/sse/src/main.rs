@@ -5,10 +5,11 @@
 //! ```
 
 use axum::{
+    error_handling::HandleErrorExt,
     extract::TypedHeader,
-    handler::get,
     http::StatusCode,
     response::sse::{Event, Sse},
+    routing::{get, service_method_routing as service},
     Router,
 };
 use futures::stream::{self, Stream};
@@ -24,19 +25,18 @@ async fn main() {
     }
     tracing_subscriber::fmt::init();
 
-    let static_files_service = axum::service::get(
-        ServeDir::new("examples/sse/assets").append_index_html_on_directories(true),
-    )
-    .handle_error(|error: std::io::Error| {
-        Ok::<_, std::convert::Infallible>((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Unhandled internal error: {}", error),
-        ))
-    });
+    let static_files_service =
+        service::get(ServeDir::new("examples/sse/assets").append_index_html_on_directories(true))
+            .handle_error(|error: std::io::Error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Unhandled internal error: {}", error),
+                )
+            });
 
     // build our application with a route
     let app = Router::new()
-        .nest("/", static_files_service)
+        .fallback(static_files_service)
         .route("/sse", get(sse_handler))
         .layer(TraceLayer::new_for_http());
 

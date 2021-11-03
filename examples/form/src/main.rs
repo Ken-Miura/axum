@@ -4,7 +4,7 @@
 //! cargo run -p example-form
 //! ```
 
-use axum::{extract::Form, handler::get, response::Html, Router};
+use axum::{extract::Form, response::Html, routing::get, Router};
 use serde::Deserialize;
 use std::net::SocketAddr;
 
@@ -55,6 +55,7 @@ async fn show_form() -> Html<&'static str> {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct Input {
     name: String,
     email: String,

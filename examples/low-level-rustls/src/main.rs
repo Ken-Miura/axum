@@ -4,13 +4,14 @@
 //! cargo run -p example-low-level-rustls
 //! ```
 
-use axum::{handler::get, Router};
+use axum::{routing::get, Router};
 use hyper::server::conn::Http;
 use std::{fs::File, io::BufReader, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_rustls::{
     rustls::{
-        internal::pemfile::certs, internal::pemfile::pkcs8_private_keys, NoClientAuth, ServerConfig,
+        internal::pemfile::{certs, pkcs8_private_keys},
+        NoClientAuth, ServerConfig,
     },
     TlsAcceptor,
 };
