@@ -40,12 +40,12 @@ Some commonly used extractors are:
 use axum::{
     extract::{Json, TypedHeader, Path, Extension, Query},
     routing::post,
+    headers::UserAgent,
     http::{Request, header::HeaderMap},
     body::{Bytes, Body},
     Router,
 };
 use serde_json::Value;
-use headers::UserAgent;
 use std::collections::HashMap;
 
 // `Path` gives you the path parameters and deserializes them. See its docs for
@@ -148,10 +148,10 @@ individual headers first:
 use axum::{
     extract::TypedHeader,
     routing::get,
+    headers::UserAgent,
     http::header::HeaderMap,
     Router,
 };
-use headers::UserAgent;
 
 async fn handler(
     TypedHeader(user_agent): TypedHeader<UserAgent>,
@@ -240,8 +240,8 @@ async fn create_user(payload: Result<Json<Value>, JsonRejection>) {
         Err(JsonRejection::InvalidJsonBody(_)) => {
             // Couldn't deserialize the body into the target type
         }
-        Err(JsonRejection::BodyAlreadyExtracted(_)) => {
-            // Another extractor had already consumed the body
+        Err(JsonRejection::BytesRejection(_)) => {
+            // Failed to extract the request body
         }
         Err(_) => {
             // `JsonRejection` is marked `#[non_exhaustive]` so match must
@@ -316,9 +316,9 @@ async fn handler(result: Result<Json<Value>, JsonRejection>) -> impl IntoRespons
                 StatusCode::BAD_REQUEST,
                 "Missing `Content-Type: application/json` header".to_string(),
             )),
-            JsonRejection::BodyAlreadyExtracted(_) => Err((
+            JsonRejection::BytesRejection(_) => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Body already extracted".to_string(),
+                "Failed to buffer request body".to_string(),
             )),
             JsonRejection::HeadersAlreadyExtracted(_) => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -397,6 +397,65 @@ let app = Router::new().route("/foo", get(handler));
 # };
 ```
 
+# Accessing other extractors in [`FromRequest`] implementations
+
+When defining custom extractors you often need to access another extractors
+in your implementation.
+
+```rust
+use axum::{
+    async_trait,
+    extract::{Extension, FromRequest, RequestParts, TypedHeader},
+    headers::{authorization::Bearer, Authorization},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+    AddExtensionLayer, Router,
+};
+
+#[derive(Clone)]
+struct State {
+    // ...
+}
+
+struct AuthenticatedUser {
+    // ...
+}
+
+#[async_trait]
+impl<B> FromRequest<B> for AuthenticatedUser
+where
+    B: Send,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
+        let TypedHeader(Authorization(token)) = 
+            TypedHeader::<Authorization<Bearer>>::from_request(req)
+                .await
+                .map_err(|err| err.into_response())?;
+
+        let Extension(state): Extension<State> = Extension::from_request(req)
+            .await
+            .map_err(|err| err.into_response())?;
+
+        // actually perform the authorization...
+        unimplemented!()
+    }
+}
+
+async fn handler(user: AuthenticatedUser) {
+    // ...
+}
+
+let state = State { /* ... */ };
+
+let app = Router::new().route("/", get(handler)).layer(AddExtensionLayer::new(state));
+# async {
+# axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
+# };
+```
+
 # Request body extractors
 
 Most of the time your request body type will be [`body::Body`] (a re-export
@@ -413,7 +472,7 @@ use std::{
 use tower_http::map_request_body::MapRequestBodyLayer;
 use axum::{
     extract::{self, BodyStream},
-    body::Body,
+    body::{Body, HttpBody},
     routing::get,
     http::{header::HeaderMap, Request},
     Router,
@@ -421,9 +480,9 @@ use axum::{
 
 struct MyBody<B>(B);
 
-impl<B> http_body::Body for MyBody<B>
+impl<B> HttpBody for MyBody<B>
 where
-    B: http_body::Body + Unpin,
+    B: HttpBody + Unpin,
 {
     type Data = B::Data;
     type Error = B::Error;
@@ -474,3 +533,5 @@ let app = Router::new()
 
 [`body::Body`]: crate::body::Body
 [customize-extractor-error]: https://github.com/tokio-rs/axum/blob/main/examples/customize-extractor-error/src/main.rs
+[`HeaderMap`]: https://docs.rs/http/latest/http/header/struct.HeaderMap.html
+[`Request`]: https://docs.rs/http/latest/http/struct.Request.html

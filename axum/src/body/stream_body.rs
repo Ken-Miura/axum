@@ -1,11 +1,13 @@
-use crate::{response::IntoResponse, BoxError, Error};
-use bytes::Bytes;
+use crate::{
+    body::{self, Bytes, HttpBody},
+    response::{IntoResponse, Response},
+    BoxError, Error,
+};
 use futures_util::{
     ready,
     stream::{self, TryStream},
 };
-use http::{HeaderMap, Response};
-use http_body::Body;
+use http::HeaderMap;
 use pin_project_lite::pin_project;
 use std::{
     fmt,
@@ -77,11 +79,8 @@ where
     S::Ok: Into<Bytes>,
     S::Error: Into<BoxError>,
 {
-    type Body = Self;
-    type BodyError = Error;
-
-    fn into_response(self) -> Response<Self> {
-        Response::new(self)
+    fn into_response(self) -> Response {
+        Response::new(body::boxed(self))
     }
 }
 
@@ -97,7 +96,7 @@ impl<S> fmt::Debug for StreamBody<S> {
     }
 }
 
-impl<S> Body for StreamBody<S>
+impl<S> HttpBody for StreamBody<S>
 where
     S: TryStream,
     S::Ok: Into<Bytes>,

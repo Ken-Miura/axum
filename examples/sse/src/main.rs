@@ -5,11 +5,10 @@
 //! ```
 
 use axum::{
-    error_handling::HandleErrorExt,
     extract::TypedHeader,
     http::StatusCode,
     response::sse::{Event, Sse},
-    routing::{get, service_method_routing as service},
+    routing::{get, get_service},
     Router,
 };
 use futures::stream::{self, Stream};
@@ -26,8 +25,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let static_files_service =
-        service::get(ServeDir::new("examples/sse/assets").append_index_html_on_directories(true))
-            .handle_error(|error: std::io::Error| {
+        get_service(ServeDir::new("examples/sse/assets").append_index_html_on_directories(true))
+            .handle_error(|error: std::io::Error| async move {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Unhandled internal error: {}", error),
@@ -57,7 +56,11 @@ async fn sse_handler(
     // A `Stream` that repeats an event every second
     let stream = stream::repeat_with(|| Event::default().data("hi!"))
         .map(Ok)
-        .throttle(Duration::from_secs(1));
+        .throttle(Duration::from_secs(10));
 
-    Sse::new(stream)
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(1))
+            .text("keep-alive-text"),
+    )
 }

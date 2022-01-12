@@ -3,11 +3,13 @@
 //! See [`extractor_middleware`] for more details.
 
 use super::{FromRequest, RequestParts};
-use crate::BoxError;
-use crate::{body::BoxBody, response::IntoResponse};
-use bytes::Bytes;
+use crate::{
+    body::{Bytes, HttpBody},
+    response::{IntoResponse, Response},
+    BoxError,
+};
 use futures_util::{future::BoxFuture, ready};
-use http::{Request, Response};
+use http::Request;
 use pin_project_lite::pin_project;
 use std::{
     fmt,
@@ -37,38 +39,56 @@ use tower_service::Service;
 ///
 /// ```rust
 /// use axum::{
-///     Router,
-///     async_trait,
 ///     extract::{extractor_middleware, FromRequest, RequestParts},
-///     http::StatusCode,
 ///     routing::{get, post},
+///     Router,
 /// };
-/// use std::convert::Infallible;
+/// use http::StatusCode;
+/// use async_trait::async_trait;
 ///
-/// struct MyExtractor;
+/// // An extractor that performs authorization.
+/// struct RequireAuth;
 ///
 /// #[async_trait]
-/// impl<B> FromRequest<B> for MyExtractor
+/// impl<B> FromRequest<B> for RequireAuth
 /// where
 ///     B: Send,
 /// {
-///     type Rejection = Infallible;
+///     type Rejection = StatusCode;
 ///
 ///     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-///         # Ok(Self)
-///         // ...
+///         let auth_header = req
+///             .headers()
+///             .and_then(|headers| headers.get(http::header::AUTHORIZATION))
+///             .and_then(|value| value.to_str().ok());
+///
+///         match auth_header {
+///             Some(auth_header) if token_is_valid(auth_header) => {
+///                 Ok(Self)
+///             }
+///             _ => Err(StatusCode::UNAUTHORIZED),
+///         }
 ///     }
 /// }
 ///
-/// async fn handler() {}
+/// fn token_is_valid(token: &str) -> bool {
+///     // ...
+///     # false
+/// }
 ///
-/// async fn other_handler() {}
+/// async fn handler() {
+///     // If we get here the request has been authorized
+/// }
+///
+/// async fn other_handler() {
+///     // If we get here the request has been authorized
+/// }
 ///
 /// let app = Router::new()
 ///     .route("/", get(handler))
 ///     .route("/foo", post(other_handler))
 ///     // The extractor will run before all routes
-///     .layer(extractor_middleware::<MyExtractor>());
+///     .route_layer(extractor_middleware::<RequireAuth>());
 /// # async {
 /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 /// # };
@@ -154,10 +174,10 @@ where
     E: FromRequest<ReqBody> + 'static,
     ReqBody: Default + Send + 'static,
     S: Service<Request<ReqBody>, Response = Response<ResBody>> + Clone,
-    ResBody: http_body::Body<Data = Bytes> + Send + 'static,
+    ResBody: HttpBody<Data = Bytes> + Send + 'static,
     ResBody::Error: Into<BoxError>,
 {
-    type Response = Response<BoxBody>;
+    type Response = Response;
     type Error = S::Error;
     type Future = ResponseFuture<ReqBody, S, E>;
 
@@ -213,10 +233,10 @@ where
     E: FromRequest<ReqBody>,
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Default,
-    ResBody: http_body::Body<Data = Bytes> + Send + 'static,
+    ResBody: HttpBody<Data = Bytes> + Send + 'static,
     ResBody::Error: Into<BoxError>,
 {
-    type Output = Result<Response<BoxBody>, S::Error>;
+    type Output = Result<Response, S::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
@@ -234,7 +254,7 @@ where
                             State::Call { future }
                         }
                         Err(err) => {
-                            let res = err.into_response().map(crate::body::box_body);
+                            let res = err.into_response();
                             return Poll::Ready(Ok(res));
                         }
                     }
@@ -242,7 +262,7 @@ where
                 StateProj::Call { future } => {
                     return future
                         .poll(cx)
-                        .map(|result| result.map(|response| response.map(crate::body::box_body)));
+                        .map(|result| result.map(|response| response.map(crate::body::boxed)));
                 }
             };
 

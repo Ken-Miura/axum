@@ -11,7 +11,9 @@
 //! - [Responses](#responses)
 //! - [Error handling](#error-handling)
 //! - [Middleware](#middleware)
+//! - [Routing to services and backpressure](#routing-to-services-and-backpressure)
 //! - [Sharing state with handlers](#sharing-state-with-handlers)
+//! - [Building integrations for axum](#building-integrations-for-axum)
 //! - [Required dependencies](#required-dependencies)
 //! - [Examples](#examples)
 //! - [Feature flags](#feature-flags)
@@ -69,12 +71,13 @@
 //! // our router
 //! let app = Router::new()
 //!     .route("/", get(root))
-//!     .route("/foo", get(foo))
+//!     .route("/foo", get(get_foo).post(post_foo))
 //!     .route("/foo/bar", get(foo_bar));
 //!
 //! // which calls one of these handlers
 //! async fn root() {}
-//! async fn foo() {}
+//! async fn get_foo() {}
+//! async fn post_foo() {}
 //! async fn foo_bar() {}
 //! # async {
 //! # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
@@ -125,7 +128,7 @@
 //! };
 //! use serde_json::{Value, json};
 //!
-//! // `&'static str` becomes a `200 OK` with `content-type: text/plain`
+//! // `&'static str` becomes a `200 OK` with `content-type: text/plain; charset=utf-8`
 //! async fn plain_text() -> &'static str {
 //!     "foo"
 //! }
@@ -159,12 +162,82 @@
 //!
 #![doc = include_str!("docs/middleware.md")]
 //!
+//! # Routing to services and backpressure
+//!
+//! Generally routing to one of multiple services and backpressure doesn't mix
+//! well. Ideally you would want ensure a service is ready to receive a request
+//! before calling it. However, in order to know which service to call, you need
+//! the request...
+//!
+//! One approach is to not consider the router service itself ready until all
+//! destination services are ready. That is the approach used by
+//! [`tower::steer::Steer`].
+//!
+//! Another approach is to always consider all services ready (always return
+//! `Poll::Ready(Ok(()))`) from `Service::poll_ready` and then actually drive
+//! readiness inside the response future returned by `Service::call`. This works
+//! well when your services don't care about backpressure and are always ready
+//! anyway.
+//!
+//! axum expects that all services used in your app wont care about
+//! backpressure and so it uses the latter strategy. However that means you
+//! should avoid routing to a service (or using a middleware) that _does_ care
+//! about backpressure. At the very least you should [load shed] so requests are
+//! dropped quickly and don't keep piling up.
+//!
+//! It also means that if `poll_ready` returns an error then that error will be
+//! returned in the response future from `call` and _not_ from `poll_ready`. In
+//! that case, the underlying service will _not_ be discarded and will continue
+//! to be used for future requests. Services that expect to be discarded if
+//! `poll_ready` fails should _not_ be used with axum.
+//!
+//! One possible approach is to only apply backpressure sensitive middleware
+//! around your entire app. This is possible because axum applications are
+//! themselves services:
+//!
+//! ```rust
+//! use axum::{
+//!     routing::get,
+//!     Router,
+//! };
+//! use tower::ServiceBuilder;
+//! # let some_backpressure_sensitive_middleware =
+//! #     tower::layer::util::Identity::new();
+//!
+//! async fn handler() { /* ... */ }
+//!
+//! let app = Router::new().route("/", get(handler));
+//!
+//! let app = ServiceBuilder::new()
+//!     .layer(some_backpressure_sensitive_middleware)
+//!     .service(app);
+//! # async {
+//! # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
+//! # };
+//! ```
+//!
+//! However when applying middleware around your whole application in this way
+//! you have to take care that errors are still being handled with
+//! appropriately.
+//!
+//! Also note that handlers created from async functions don't care about
+//! backpressure and are always ready. So if you're not using any Tower
+//! middleware you don't have to worry about any of this.
+//!
 //! # Sharing state with handlers
 //!
 //! It is common to share some state between handlers for example to share a
-//! pool of database connections or clients to other services. That can be done
-//! using the [`AddExtension`] middleware (applied with [`AddExtensionLayer`])
-//! and the [`Extension`](crate::extract::Extension) extractor:
+//! pool of database connections or clients to other services.
+//!
+//! The two most common ways of doing that is:
+//! - Using request extensions
+//! - Using closure captures
+//!
+//! ## Using request extensions
+//!
+//! The easiest way to extract state in handlers is using [`AddExtension`]
+//! middleware (applied with [`AddExtensionLayer`]) and the
+//! [`Extension`](crate::extract::Extension) extractor:
 //!
 //! ```rust,no_run
 //! use axum::{
@@ -195,6 +268,74 @@
 //! # };
 //! ```
 //!
+//! The downside to this approach is that you'll get runtime errors
+//! (specifically a `500 Internal Server Error` response) if you try and extract
+//! an extension that doesn't exist, perhaps because you forgot add the
+//! middleware or because you're extracting the wrong type.
+//!
+//! ## Using closure captures
+//!
+//! State can also be passed directly to handlers using closure captures:
+//!
+//! ```rust,no_run
+//! use axum::{
+//!     AddExtensionLayer,
+//!     Json,
+//!     extract::{Extension, Path},
+//!     routing::{get, post},
+//!     Router,
+//! };
+//! use std::sync::Arc;
+//! use serde::Deserialize;
+//!
+//! struct State {
+//!     // ...
+//! }
+//!
+//! let shared_state = Arc::new(State { /* ... */ });
+//!
+//! let app = Router::new()
+//!     .route(
+//!         "/users",
+//!         post({
+//!             let shared_state = Arc::clone(&shared_state);
+//!             move |body| create_user(body, Arc::clone(&shared_state))
+//!         }),
+//!     )
+//!     .route(
+//!         "/users/:id",
+//!         get({
+//!             let shared_state = Arc::clone(&shared_state);
+//!             move |path| get_user(path, Arc::clone(&shared_state))
+//!         }),
+//!     );
+//!
+//! async fn get_user(Path(user_id): Path<String>, state: Arc<State>) {
+//!     // ...
+//! }
+//!
+//! async fn create_user(Json(payload): Json<CreateUserPayload>, state: Arc<State>) {
+//!     // ...
+//! }
+//!
+//! #[derive(Deserialize)]
+//! struct CreateUserPayload {
+//!     // ...
+//! }
+//! # async {
+//! # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
+//! # };
+//! ```
+//!
+//! The downside to this approach is that its a little more verbose than using
+//! extensions.
+//!
+//! # Building integrations for axum
+//!
+//! Libraries authors that want to provide [`FromRequest`] or [`IntoResponse`] implementations
+//! should depend on the [`axum-core`] crate, instead of `axum` if possible. [`axum-core`] contains
+//! core types and traits and is less likely to receive breaking changes.
+//!
 //! # Required dependencies
 //!
 //! To use axum there are a few dependencies you have pull in as well:
@@ -207,7 +348,7 @@
 //! tower = "<latest-version>"
 //! ```
 //!
-//! The `"full"` feature for hyper and tokio isn't strictly necessary but its
+//! The `"full"` feature for hyper and tokio isn't strictly necessary but it's
 //! the easiest way to get started.
 //!
 //! Note that [`hyper::Server`] is re-exported by axum so if thats all you need
@@ -254,8 +395,8 @@
 //! [`OriginalUri`]: crate::extract::OriginalUri
 //! [`Service`]: tower::Service
 //! [`Service::poll_ready`]: tower::Service::poll_ready
+//! [`Service`'s]: tower::Service
 //! [`tower::Service`]: tower::Service
-//! [`handle_error`]: error_handling::HandleErrorExt::handle_error
 //! [tower-guides]: https://github.com/tower-rs/tower/tree/master/guides
 //! [`Uuid`]: https://docs.rs/uuid/latest/uuid/
 //! [`FromRequest`]: crate::extract::FromRequest
@@ -266,6 +407,8 @@
 //! [`debug_handler`]: https://docs.rs/axum-debug/latest/axum_debug/attr.debug_handler.html
 //! [`Handler`]: crate::handler::Handler
 //! [`Infallible`]: std::convert::Infallible
+//! [load shed]: tower::load_shed
+//! [`axum-core`]: http://crates.io/crates/axum-core
 
 #![warn(
     clippy::all,
@@ -295,6 +438,7 @@
     clippy::option_option,
     clippy::verbose_file_reads,
     clippy::unnested_or_patterns,
+    clippy::str_to_string,
     rust_2018_idioms,
     future_incompatible,
     nonstandard_style,
@@ -311,8 +455,6 @@
 pub(crate) mod macros;
 
 mod add_extension;
-mod clone_box_service;
-mod error;
 #[cfg(feature = "json")]
 mod json;
 mod util;
@@ -330,6 +472,9 @@ mod test_helpers;
 pub use add_extension::{AddExtension, AddExtensionLayer};
 #[doc(no_inline)]
 pub use async_trait::async_trait;
+#[cfg(feature = "headers")]
+#[doc(no_inline)]
+pub use headers;
 #[doc(no_inline)]
 pub use http;
 #[doc(no_inline)]
@@ -339,7 +484,7 @@ pub use hyper::Server;
 #[cfg(feature = "json")]
 pub use self::json::Json;
 #[doc(inline)]
-pub use self::{error::Error, routing::Router};
+pub use self::routing::Router;
 
-/// Alias for a type-erased error type.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+#[doc(inline)]
+pub use axum_core::{BoxError, Error};

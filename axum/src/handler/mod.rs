@@ -5,7 +5,7 @@
 //! Some examples of handlers:
 //!
 //! ```rust
-//! use bytes::Bytes;
+//! use axum::body::Bytes;
 //! use http::StatusCode;
 //!
 //! // Handler that immediately returns an empty `200 OK` response.
@@ -35,13 +35,13 @@
 //!
 //! ## Debugging handler type errors
 //!
-//! For a function to used as a handler it must implement the [`Handler`] trait.
+//! For a function to be used as a handler it must implement the [`Handler`] trait.
 //! axum provides blanket implementations for functions that:
 //!
 //! - Are `async fn`s.
 //! - Take no more than 16 arguments that all implement [`FromRequest`].
 //! - Returns something that implements [`IntoResponse`].
-//! - If a closure is used it must implement `Clone + Send + Sync` and be
+//! - If a closure is used it must implement `Clone + Send` and be
 //! `'static`.
 //! - Returns a future that is `Send`. The most common way to accidentally make a
 //! future `!Send` is to hold a `!Send` type across an await.
@@ -60,27 +60,28 @@
 //!     |
 //!    ::: axum/src/handler/mod.rs:116:8
 //!     |
-//! 116 |     H: Handler<B, T>,
+//! 116 |     H: Handler<T, B>,
 //!     |        ------------- required by this bound in `axum::routing::get`
 //! ```
 //!
 //! This error doesn't tell you _why_ your function doesn't implement
 //! [`Handler`]. It's possible to improve the error with the [`debug_handler`]
 //! proc-macro from the [axum-debug] crate.
+//!
+//! [axum-debug]: https://docs.rs/axum-debug
 
 use crate::{
-    body::{box_body, BoxBody},
+    body::{boxed, Body, Bytes, HttpBody},
     extract::{
         connect_info::{Connected, IntoMakeServiceWithConnectInfo},
         FromRequest, RequestParts,
     },
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::IntoMakeService,
     BoxError,
 };
 use async_trait::async_trait;
-use bytes::Bytes;
-use http::{Request, Response};
+use http::Request;
 use std::{fmt, future::Future, marker::PhantomData};
 use tower::ServiceExt;
 use tower_layer::Layer;
@@ -106,14 +107,14 @@ pub(crate) mod sealed {
 ///
 /// See the [module docs](crate::handler) for more details.
 #[async_trait]
-pub trait Handler<B, T>: Clone + Send + Sized + 'static {
+pub trait Handler<T, B = Body>: Clone + Send + Sized + 'static {
     // This seals the trait. We cannot use the regular "sealed super trait"
     // approach due to coherence.
     #[doc(hidden)]
     type Sealed: sealed::HiddenTrait;
 
     /// Call the handler with the given request.
-    async fn call(self, req: Request<B>) -> Response<BoxBody>;
+    async fn call(self, req: Request<B>) -> Response;
 
     /// Apply a [`tower::Layer`] to the handler.
     ///
@@ -153,7 +154,7 @@ pub trait Handler<B, T>: Clone + Send + Sized + 'static {
     /// ```
     fn layer<L>(self, layer: L) -> Layered<L::Service, T>
     where
-        L: Layer<IntoService<Self, B, T>>,
+        L: Layer<IntoService<Self, T, B>>,
     {
         Layered::new(layer.layer(self.into_service()))
     }
@@ -190,7 +191,7 @@ pub trait Handler<B, T>: Clone + Send + Sized + 'static {
     /// ```
     ///
     /// [`Router::fallback`]: crate::routing::Router::fallback
-    fn into_service(self) -> IntoService<Self, B, T> {
+    fn into_service(self) -> IntoService<Self, T, B> {
         IntoService::new(self)
     }
 
@@ -217,7 +218,7 @@ pub trait Handler<B, T>: Clone + Send + Sized + 'static {
     /// ```
     ///
     /// [`MakeService`]: tower::make::MakeService
-    fn into_make_service(self) -> IntoMakeService<IntoService<Self, B, T>> {
+    fn into_make_service(self) -> IntoMakeService<IntoService<Self, T, B>> {
         IntoMakeService::new(self.into_service())
     }
 
@@ -251,7 +252,7 @@ pub trait Handler<B, T>: Clone + Send + Sized + 'static {
     /// [`Router::into_make_service_with_connect_info`]: crate::routing::Router::into_make_service_with_connect_info
     fn into_make_service_with_connect_info<C, Target>(
         self,
-    ) -> IntoMakeServiceWithConnectInfo<IntoService<Self, B, T>, C>
+    ) -> IntoMakeServiceWithConnectInfo<IntoService<Self, T, B>, C>
     where
         C: Connected<Target>,
     {
@@ -260,17 +261,17 @@ pub trait Handler<B, T>: Clone + Send + Sized + 'static {
 }
 
 #[async_trait]
-impl<F, Fut, Res, B> Handler<B, ()> for F
+impl<F, Fut, Res, B> Handler<(), B> for F
 where
-    F: FnOnce() -> Fut + Clone + Send + Sync + 'static,
+    F: FnOnce() -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Res> + Send,
     Res: IntoResponse,
     B: Send + 'static,
 {
     type Sealed = sealed::Hidden;
 
-    async fn call(self, _req: Request<B>) -> Response<BoxBody> {
-        self().await.into_response().map(box_body)
+    async fn call(self, _req: Request<B>) -> Response {
+        self().await.into_response()
     }
 }
 
@@ -278,9 +279,9 @@ macro_rules! impl_handler {
     ( $($ty:ident),* $(,)? ) => {
         #[async_trait]
         #[allow(non_snake_case)]
-        impl<F, Fut, B, Res, $($ty,)*> Handler<B, ($($ty,)*)> for F
+        impl<F, Fut, B, Res, $($ty,)*> Handler<($($ty,)*), B> for F
         where
-            F: FnOnce($($ty,)*) -> Fut + Clone + Send + Sync + 'static,
+            F: FnOnce($($ty,)*) -> Fut + Clone + Send + 'static,
             Fut: Future<Output = Res> + Send,
             B: Send + 'static,
             Res: IntoResponse,
@@ -288,40 +289,25 @@ macro_rules! impl_handler {
         {
             type Sealed = sealed::Hidden;
 
-            async fn call(self, req: Request<B>) -> Response<BoxBody> {
+            async fn call(self, req: Request<B>) -> Response {
                 let mut req = RequestParts::new(req);
 
                 $(
                     let $ty = match $ty::from_request(&mut req).await {
                         Ok(value) => value,
-                        Err(rejection) => return rejection.into_response().map(box_body),
+                        Err(rejection) => return rejection.into_response(),
                     };
                 )*
 
                 let res = self($($ty,)*).await;
 
-                res.into_response().map(box_body)
+                res.into_response()
             }
         }
     };
 }
 
-impl_handler!(T1);
-impl_handler!(T1, T2);
-impl_handler!(T1, T2, T3);
-impl_handler!(T1, T2, T3, T4);
-impl_handler!(T1, T2, T3, T4, T5);
-impl_handler!(T1, T2, T3, T4, T5, T6);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
-impl_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+all_the_tuples!(impl_handler);
 
 /// A [`Service`] created from a [`Handler`] by applying a Tower middleware.
 ///
@@ -350,27 +336,22 @@ where
 }
 
 #[async_trait]
-impl<S, T, ReqBody, ResBody> Handler<ReqBody, T> for Layered<S, T>
+impl<S, T, ReqBody, ResBody> Handler<T, ReqBody> for Layered<S, T>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>> + Clone + Send + 'static,
     S::Error: IntoResponse,
     S::Future: Send,
     T: 'static,
     ReqBody: Send + 'static,
-    ResBody: http_body::Body<Data = Bytes> + Send + 'static,
+    ResBody: HttpBody<Data = Bytes> + Send + 'static,
     ResBody::Error: Into<BoxError>,
 {
     type Sealed = sealed::Hidden;
 
-    async fn call(self, req: Request<ReqBody>) -> Response<BoxBody> {
-        match self
-            .svc
-            .oneshot(req)
-            .await
-            .map_err(IntoResponse::into_response)
-        {
-            Ok(res) => res.map(box_body),
-            Err(res) => res.map(box_body),
+    async fn call(self, req: Request<ReqBody>) -> Response {
+        match self.svc.oneshot(req).await {
+            Ok(res) => res.map(boxed),
+            Err(res) => res.into_response(),
         }
     }
 }
@@ -401,13 +382,5 @@ mod tests {
         let res = client.post("/").body("hi there!").send().await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.text().await, "you said: hi there!");
-    }
-
-    #[test]
-    fn traits() {
-        use crate::routing::MethodRouter;
-        use crate::test_helpers::*;
-        assert_send::<MethodRouter<(), NotSendSync, NotSendSync, ()>>();
-        assert_sync::<MethodRouter<(), NotSendSync, NotSendSync, ()>>();
     }
 }

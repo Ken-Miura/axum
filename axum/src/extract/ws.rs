@@ -65,18 +65,20 @@
 
 use self::rejection::*;
 use super::{rejection::*, FromRequest, RequestParts};
-use crate::{response::IntoResponse, Error};
+use crate::{
+    body::{self, Bytes},
+    response::Response,
+    Error,
+};
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures_util::{
     sink::{Sink, SinkExt},
     stream::{Stream, StreamExt},
 };
 use http::{
     header::{self, HeaderName, HeaderValue},
-    Method, Response, StatusCode,
+    Method, StatusCode,
 };
-use http_body::Full;
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use sha1::{Digest, Sha1};
 use std::{
@@ -103,7 +105,8 @@ use tokio_tungstenite::{
 #[derive(Debug)]
 pub struct WebSocketUpgrade {
     config: WebSocketConfig,
-    protocols: Option<Box<[Cow<'static, str>]>>,
+    /// The chosen protocol sent in the `Sec-WebSocket-Protocol` header of the response.
+    protocol: Option<HeaderValue>,
     sec_websocket_key: HeaderValue,
     on_upgrade: OnUpgrade,
     sec_websocket_protocol: Option<HeaderValue>,
@@ -131,7 +134,12 @@ impl WebSocketUpgrade {
     /// Set the known protocols.
     ///
     /// If the protocol name specified by `Sec-WebSocket-Protocol` header
-    /// to match any of them, the upgrade response will include `Sec-WebSocket-Protocol` header and return the protocol name.
+    /// to match any of them, the upgrade response will include `Sec-WebSocket-Protocol` header and
+    /// return the protocol name.
+    ///
+    /// The protocols should be listed in decreasing order of preference: if the client offers
+    /// multiple protocols that the server could support, the server will pick the first one in
+    /// this list.
     ///
     /// # Examples
     ///
@@ -160,13 +168,27 @@ impl WebSocketUpgrade {
         I: IntoIterator,
         I::Item: Into<Cow<'static, str>>,
     {
-        self.protocols = Some(
-            protocols
+        if let Some(req_protocols) = self
+            .sec_websocket_protocol
+            .as_ref()
+            .and_then(|p| p.to_str().ok())
+        {
+            self.protocol = protocols
                 .into_iter()
+                // FIXME: This will often allocate a new `String` and so is less efficient than it
+                // could be. But that can't be fixed without breaking changes to the public API.
                 .map(Into::into)
-                .collect::<Vec<_>>()
-                .into(),
-        );
+                .find(|protocol| {
+                    req_protocols
+                        .split(',')
+                        .any(|req_protocol| req_protocol.trim() == protocol)
+                })
+                .map(|protocol| match protocol {
+                    Cow::Owned(s) => HeaderValue::from_str(&s).unwrap(),
+                    Cow::Borrowed(s) => HeaderValue::from_static(s),
+                });
+        }
+
         self
     }
 
@@ -176,15 +198,42 @@ impl WebSocketUpgrade {
     /// When using `WebSocketUpgrade`, the response produced by this method
     /// should be returned from the handler. See the [module docs](self) for an
     /// example.
-    pub fn on_upgrade<F, Fut>(self, callback: F) -> impl IntoResponse
+    pub fn on_upgrade<F, Fut>(self, callback: F) -> Response
     where
         F: FnOnce(WebSocket) -> Fut + Send + 'static,
         Fut: Future + Send + 'static,
     {
-        WebSocketUpgradeResponse {
-            extractor: self,
-            callback,
+        let on_upgrade = self.on_upgrade;
+        let config = self.config;
+
+        tokio::spawn(async move {
+            let upgraded = on_upgrade.await.expect("connection upgrade failed");
+            let socket =
+                WebSocketStream::from_raw_socket(upgraded, protocol::Role::Server, Some(config))
+                    .await;
+            let socket = WebSocket { inner: socket };
+            callback(socket).await;
+        });
+
+        #[allow(clippy::declare_interior_mutable_const)]
+        const UPGRADE: HeaderValue = HeaderValue::from_static("upgrade");
+        #[allow(clippy::declare_interior_mutable_const)]
+        const WEBSOCKET: HeaderValue = HeaderValue::from_static("websocket");
+
+        let mut builder = Response::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header(header::CONNECTION, UPGRADE)
+            .header(header::UPGRADE, WEBSOCKET)
+            .header(
+                header::SEC_WEBSOCKET_ACCEPT,
+                sign(self.sec_websocket_key.as_bytes()),
+            );
+
+        if let Some(protocol) = self.protocol {
+            builder = builder.header(header::SEC_WEBSOCKET_PROTOCOL, protocol);
         }
+
+        builder.body(body::boxed(body::Empty::new())).unwrap()
     }
 }
 
@@ -214,7 +263,7 @@ where
 
         let sec_websocket_key = if let Some(key) = req
             .headers_mut()
-            .ok_or(HeadersAlreadyExtracted)?
+            .ok_or_else(HeadersAlreadyExtracted::default)?
             .remove(header::SEC_WEBSOCKET_KEY)
         {
             key
@@ -224,19 +273,19 @@ where
 
         let on_upgrade = req
             .extensions_mut()
-            .ok_or(ExtensionsAlreadyExtracted)?
+            .ok_or_else(ExtensionsAlreadyExtracted::default)?
             .remove::<OnUpgrade>()
             .unwrap();
 
         let sec_websocket_protocol = req
             .headers()
-            .ok_or(HeadersAlreadyExtracted)?
+            .ok_or_else(HeadersAlreadyExtracted::default)?
             .get(header::SEC_WEBSOCKET_PROTOCOL)
             .cloned();
 
         Ok(Self {
             config: Default::default(),
-            protocols: None,
+            protocol: None,
             sec_websocket_key,
             on_upgrade,
             sec_websocket_protocol,
@@ -249,7 +298,11 @@ fn header_eq<B>(
     key: HeaderName,
     value: &'static str,
 ) -> Result<bool, HeadersAlreadyExtracted> {
-    if let Some(header) = req.headers().ok_or(HeadersAlreadyExtracted)?.get(&key) {
+    if let Some(header) = req
+        .headers()
+        .ok_or_else(HeadersAlreadyExtracted::default)?
+        .get(&key)
+    {
         Ok(header.as_bytes().eq_ignore_ascii_case(value.as_bytes()))
     } else {
         Ok(false)
@@ -261,7 +314,11 @@ fn header_contains<B>(
     key: HeaderName,
     value: &'static str,
 ) -> Result<bool, HeadersAlreadyExtracted> {
-    let header = if let Some(header) = req.headers().ok_or(HeadersAlreadyExtracted)?.get(&key) {
+    let header = if let Some(header) = req
+        .headers()
+        .ok_or_else(HeadersAlreadyExtracted::default)?
+        .get(&key)
+    {
         header
     } else {
         return Ok(false);
@@ -271,82 +328,6 @@ fn header_contains<B>(
         Ok(header.to_ascii_lowercase().contains(value))
     } else {
         Ok(false)
-    }
-}
-
-struct WebSocketUpgradeResponse<F> {
-    extractor: WebSocketUpgrade,
-    callback: F,
-}
-
-impl<F, Fut> IntoResponse for WebSocketUpgradeResponse<F>
-where
-    F: FnOnce(WebSocket) -> Fut + Send + 'static,
-    Fut: Future + Send + 'static,
-{
-    type Body = Full<Bytes>;
-    type BodyError = <Self::Body as http_body::Body>::Error;
-
-    fn into_response(self) -> Response<Self::Body> {
-        // check requested protocols
-        let protocol = self
-            .extractor
-            .sec_websocket_protocol
-            .as_ref()
-            .and_then(|req_protocols| {
-                let req_protocols = req_protocols.to_str().ok()?;
-                let protocols = self.extractor.protocols.as_ref()?;
-                req_protocols
-                    .split(',')
-                    .map(|req_p| req_p.trim())
-                    .find(|req_p| protocols.iter().any(|p| p == req_p))
-            });
-
-        let protocol = match protocol {
-            Some(protocol) => {
-                if let Ok(protocol) = HeaderValue::from_str(protocol) {
-                    Some(protocol)
-                } else {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "`Sec-WebSocket-Protocol` header is invalid",
-                    )
-                        .into_response();
-                }
-            }
-            None => None,
-        };
-
-        let callback = self.callback;
-        let on_upgrade = self.extractor.on_upgrade;
-        let config = self.extractor.config;
-
-        tokio::spawn(async move {
-            let upgraded = on_upgrade.await.expect("connection upgrade failed");
-            let socket =
-                WebSocketStream::from_raw_socket(upgraded, protocol::Role::Server, Some(config))
-                    .await;
-            let socket = WebSocket { inner: socket };
-            callback(socket).await;
-        });
-
-        let mut builder = Response::builder()
-            .status(StatusCode::SWITCHING_PROTOCOLS)
-            .header(
-                header::CONNECTION,
-                HeaderValue::from_str("upgrade").unwrap(),
-            )
-            .header(header::UPGRADE, HeaderValue::from_str("websocket").unwrap())
-            .header(
-                header::SEC_WEBSOCKET_ACCEPT,
-                sign(self.extractor.sec_websocket_key.as_bytes()),
-            );
-
-        if let Some(protocol) = protocol {
-            builder = builder.header(header::SEC_WEBSOCKET_PROTOCOL, protocol);
-        }
-
-        builder.body(Full::default()).unwrap()
     }
 }
 
@@ -457,11 +438,18 @@ pub enum Message {
     Binary(Vec<u8>),
     /// A ping message with the specified payload
     ///
-    /// The payload here must have a length less than 125 bytes
+    /// The payload here must have a length less than 125 bytes.
+    ///
+    /// Ping messages will be automatically responded to by the server, so you do not have to worry
+    /// about dealing with them yourself.
     Ping(Vec<u8>),
     /// A pong message with the specified payload
     ///
-    /// The payload here must have a length less than 125 bytes
+    /// The payload here must have a length less than 125 bytes.
+    ///
+    /// Pong messages will be automatically sent to the client if a ping message is received, so
+    /// you do not have to worry about constructing them yourself unless you want to implement a
+    /// [unidirectional heartbeat](https://tools.ietf.org/html/rfc6455#section-5.5.3).
     Pong(Vec<u8>),
     /// A close message with the optional close frame.
     Close(Option<CloseFrame<'static>>),

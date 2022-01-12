@@ -1,10 +1,11 @@
 use super::{rejection::*, take_body, Extension, FromRequest, RequestParts};
-use crate::{body::Body, BoxError, Error};
+use crate::{
+    body::{Body, Bytes, HttpBody},
+    BoxError, Error,
+};
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures_util::stream::Stream;
-use http::{Extensions, HeaderMap, Method, Request, Uri, Version};
-use http_body::Body as HttpBody;
+use http::Uri;
 use std::{
     convert::Infallible,
     fmt,
@@ -12,78 +13,6 @@ use std::{
     task::{Context, Poll},
 };
 use sync_wrapper::SyncWrapper;
-
-#[async_trait]
-impl<B> FromRequest<B> for Request<B>
-where
-    B: Send,
-{
-    type Rejection = RequestAlreadyExtracted;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let req = std::mem::replace(
-            req,
-            RequestParts {
-                method: req.method.clone(),
-                version: req.version,
-                uri: req.uri.clone(),
-                headers: None,
-                extensions: None,
-                body: None,
-            },
-        );
-
-        let err = match req.try_into_request() {
-            Ok(req) => return Ok(req),
-            Err(err) => err,
-        };
-
-        match err.downcast::<RequestAlreadyExtracted>() {
-            Ok(err) => return Err(err),
-            Err(err) => unreachable!(
-                "Unexpected error type from `try_into_request`: `{:?}`. This is a bug in axum, please file an issue",
-                err,
-            ),
-        }
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for RawBody<B>
-where
-    B: Send,
-{
-    type Rejection = BodyAlreadyExtracted;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let body = take_body(req)?;
-        Ok(Self(body))
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for Method
-where
-    B: Send,
-{
-    type Rejection = Infallible;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        Ok(req.method().clone())
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for Uri
-where
-    B: Send,
-{
-    type Rejection = Infallible;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        Ok(req.uri().clone())
-    }
-}
 
 /// Extractor that gets the original request URI regardless of nesting.
 ///
@@ -114,6 +43,43 @@ where
 /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 /// # };
 /// ```
+///
+/// # Extracting via request extensions
+///
+/// `OriginalUri` can also be accessed from middleware via request extensions.
+/// This is useful for example with [`Trace`](tower_http::trace::Trace) to
+/// create a span that contains the full path, if your service might be nested:
+///
+/// ```
+/// use axum::{
+///     Router,
+///     extract::OriginalUri,
+///     http::Request,
+///     routing::get,
+/// };
+/// use tower_http::trace::TraceLayer;
+///
+/// let api_routes = Router::new()
+///     .route("/users/:id", get(|| async { /* ... */ }))
+///     .layer(
+///         TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
+///             let path = if let Some(path) = req.extensions().get::<OriginalUri>() {
+///                 // This will include `/api`
+///                 path.0.path().to_owned()
+///             } else {
+///                 // The `OriginalUri` extension will always be present if using
+///                 // `Router` unless another extractor or middleware has removed it
+///                 req.uri().path().to_owned()
+///             };
+///             tracing::info_span!("http-request", %path)
+///         }),
+///     );
+///
+/// let app = Router::new().nest("/api", api_routes);
+/// # async {
+/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
+/// # };
+/// ```
 #[derive(Debug, Clone)]
 pub struct OriginalUri(pub Uri);
 
@@ -130,42 +96,6 @@ where
             .unwrap_or_else(|_| Extension(OriginalUri(req.uri().clone())))
             .0;
         Ok(uri)
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for Version
-where
-    B: Send,
-{
-    type Rejection = Infallible;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        Ok(req.version())
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for HeaderMap
-where
-    B: Send,
-{
-    type Rejection = HeadersAlreadyExtracted;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        req.take_headers().ok_or(HeadersAlreadyExtracted)
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for Extensions
-where
-    B: Send,
-{
-    type Rejection = ExtensionsAlreadyExtracted;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        req.take_extensions().ok_or(ExtensionsAlreadyExtracted)
     }
 }
 
@@ -201,7 +131,7 @@ where
 /// [`Stream`]: https://docs.rs/futures/latest/futures/stream/trait.Stream.html
 /// [`body::Body`]: crate::body::Body
 pub struct BodyStream(
-    SyncWrapper<Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send + 'static>>>,
+    SyncWrapper<Pin<Box<dyn HttpBody<Data = Bytes, Error = Error> + Send + 'static>>>,
 );
 
 impl Stream for BodyStream {
@@ -272,62 +202,27 @@ fn body_stream_traits() {
 pub struct RawBody<B = Body>(pub B);
 
 #[async_trait]
-impl<B> FromRequest<B> for Bytes
+impl<B> FromRequest<B> for RawBody<B>
 where
-    B: http_body::Body + Send,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    B: Send,
 {
-    type Rejection = BytesRejection;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let body = take_body(req)?;
-
-        let bytes = hyper::body::to_bytes(body)
-            .await
-            .map_err(FailedToBufferBody::from_err)?;
-
-        Ok(bytes)
-    }
-}
-
-#[async_trait]
-impl FromRequest<Body> for Body {
     type Rejection = BodyAlreadyExtracted;
 
-    async fn from_request(req: &mut RequestParts<Body>) -> Result<Self, Self::Rejection> {
-        req.take_body().ok_or(BodyAlreadyExtracted)
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for String
-where
-    B: http_body::Body + Send,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-{
-    type Rejection = StringRejection;
-
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
         let body = take_body(req)?;
-
-        let bytes = hyper::body::to_bytes(body)
-            .await
-            .map_err(FailedToBufferBody::from_err)?
-            .to_vec();
-
-        let string = String::from_utf8(bytes).map_err(InvalidUtf8::from_err)?;
-
-        Ok(string)
+        Ok(Self(body))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{body::Body, routing::post, test_helpers::*, Router};
-    use http::StatusCode;
+    use crate::{
+        body::Body,
+        routing::{get, post},
+        test_helpers::*,
+        AddExtensionLayer, Router,
+    };
+    use http::{Method, Request, StatusCode};
 
     #[tokio::test]
     async fn multiple_request_extractors() {
@@ -343,5 +238,43 @@ mod tests {
             res.text().await,
             "Cannot have two request body extractors for a single handler"
         );
+    }
+
+    #[tokio::test]
+    async fn extract_request_parts() {
+        #[derive(Clone)]
+        struct Ext;
+
+        async fn handler(parts: http::request::Parts) {
+            assert_eq!(parts.method, Method::GET);
+            assert_eq!(parts.uri, "/");
+            assert_eq!(parts.version, http::Version::HTTP_11);
+            assert_eq!(parts.headers["x-foo"], "123");
+            parts.extensions.get::<Ext>().unwrap();
+        }
+
+        let client = TestClient::new(
+            Router::new()
+                .route("/", get(handler))
+                .layer(AddExtensionLayer::new(Ext)),
+        );
+
+        let res = client.get("/").header("x-foo", "123").send().await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn extract_request_parts_doesnt_consume_the_body() {
+        #[derive(Clone)]
+        struct Ext;
+
+        async fn handler(_parts: http::request::Parts, body: String) {
+            assert_eq!(body, "foo");
+        }
+
+        let client = TestClient::new(Router::new().route("/", get(handler)));
+
+        let res = client.get("/").body("foo").send().await;
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }

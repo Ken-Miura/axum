@@ -8,19 +8,18 @@
 
 use axum::{
     async_trait,
-    body::{Bytes, Full},
     extract::{FromRequest, RequestParts, TypedHeader},
-    http::{Response, StatusCode},
-    response::IntoResponse,
+    headers::{authorization::Bearer, Authorization},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use headers::{authorization::Bearer, Authorization};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{convert::Infallible, fmt::Display, net::SocketAddr};
+use std::{fmt::Display, net::SocketAddr};
 
 // Quick instructions
 //
@@ -94,7 +93,7 @@ async fn authorize(Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody>, A
     let claims = Claims {
         sub: "b@b.com".to_owned(),
         company: "ACME".to_owned(),
-        exp: 10000000000,
+        exp: 100000,
     };
     // Create the authorization token
     let token = encode(&Header::default(), &claims, &KEYS.encoding)
@@ -141,10 +140,7 @@ where
 }
 
 impl IntoResponse for AuthError {
-    type Body = Full<Bytes>;
-    type BodyError = Infallible;
-
-    fn into_response(self) -> Response<Self::Body> {
+    fn into_response(self) -> Response {
         let (status, error_message) = match self {
             AuthError::WrongCredentials => (StatusCode::UNAUTHORIZED, "Wrong credentials"),
             AuthError::MissingCredentials => (StatusCode::BAD_REQUEST, "Missing credentials"),

@@ -1,29 +1,13 @@
 //! Rejection response types.
 
-use super::IntoResponse;
-use crate::BoxError;
 use crate::{
-    body::{box_body, BoxBody},
-    Error,
+    body::{boxed, Full},
+    response::{IntoResponse, Response},
+    BoxError, Error,
 };
-use bytes::Bytes;
-use http_body::Full;
-use std::convert::Infallible;
 
-define_rejection! {
-    #[status = INTERNAL_SERVER_ERROR]
-    #[body = "Extensions taken by other extractor"]
-    /// Rejection used if the request extension has been taken by another
-    /// extractor.
-    pub struct ExtensionsAlreadyExtracted;
-}
-
-define_rejection! {
-    #[status = INTERNAL_SERVER_ERROR]
-    #[body = "Headers taken by other extractor"]
-    /// Rejection used if the headers has been taken by another extractor.
-    pub struct HeadersAlreadyExtracted;
-}
+pub use crate::extract::path::FailedToDeserializePathParams;
+pub use axum_core::extract::rejection::*;
 
 #[cfg(feature = "json")]
 define_rejection! {
@@ -51,22 +35,6 @@ define_rejection! {
 }
 
 define_rejection! {
-    #[status = BAD_REQUEST]
-    #[body = "Failed to buffer the request body"]
-    /// Rejection type for extractors that buffer the request body. Used if the
-    /// request body cannot be buffered due to an error.
-    pub struct FailedToBufferBody(Error);
-}
-
-define_rejection! {
-    #[status = BAD_REQUEST]
-    #[body = "Request body didn't contain valid UTF-8"]
-    /// Rejection type used when buffering the request into a [`String`] if the
-    /// body doesn't contain valid UTF-8.
-    pub struct InvalidUtf8(Error);
-}
-
-define_rejection! {
     #[status = PAYLOAD_TOO_LARGE]
     #[body = "Request payload is too large"]
     /// Rejection type for [`ContentLengthLimit`](super::ContentLengthLimit) if
@@ -84,17 +52,10 @@ define_rejection! {
 
 define_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
-    #[body = "No url params found for matched route. This is a bug in axum. Please open an issue"]
-    /// Rejection type used if you try and extract the URL params more than once.
-    pub struct MissingRouteParams;
-}
-
-define_rejection! {
-    #[status = INTERNAL_SERVER_ERROR]
-    #[body = "Cannot have two request body extractors for a single handler"]
-    /// Rejection type used if you try and extract the request body more than
-    /// once.
-    pub struct BodyAlreadyExtracted;
+    #[body = "No paths parameters found for matched route. This is a bug in axum. Please open an issue"]
+    /// Rejection type used if axum's internal representation of path parameters is missing. This
+    /// should never happen and is a bug in axum if it does.
+    pub struct MissingPathParams;
 }
 
 define_rejection! {
@@ -103,36 +64,6 @@ define_rejection! {
     /// Rejection type used if you try and extract the request more than once.
     pub struct InvalidFormContentType;
 }
-
-/// Rejection type for [`Path`](super::Path) if the capture route
-/// param didn't have the expected type.
-#[derive(Debug)]
-pub struct InvalidPathParam(pub(crate) String);
-
-impl InvalidPathParam {
-    pub(super) fn new(err: impl Into<String>) -> Self {
-        InvalidPathParam(err.into())
-    }
-}
-
-impl IntoResponse for InvalidPathParam {
-    type Body = Full<Bytes>;
-    type BodyError = Infallible;
-
-    fn into_response(self) -> http::Response<Self::Body> {
-        let mut res = http::Response::new(Full::from(self.to_string()));
-        *res.status_mut() = http::StatusCode::BAD_REQUEST;
-        res
-    }
-}
-
-impl std::fmt::Display for InvalidPathParam {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Invalid URL param. {}", self.0)
-    }
-}
-
-impl std::error::Error for InvalidPathParam {}
 
 /// Rejection type for extractors that deserialize query strings if the input
 /// couldn't be deserialized into the target type.
@@ -155,11 +86,8 @@ impl FailedToDeserializeQueryString {
 }
 
 impl IntoResponse for FailedToDeserializeQueryString {
-    type Body = Full<Bytes>;
-    type BodyError = Infallible;
-
-    fn into_response(self) -> http::Response<Self::Body> {
-        let mut res = http::Response::new(Full::from(self.to_string()));
+    fn into_response(self) -> Response {
+        let mut res = Response::new(boxed(Full::from(self.to_string())));
         *res.status_mut() = http::StatusCode::BAD_REQUEST;
         res
     }
@@ -195,8 +123,7 @@ composite_rejection! {
     pub enum FormRejection {
         InvalidFormContentType,
         FailedToDeserializeQueryString,
-        FailedToBufferBody,
-        BodyAlreadyExtracted,
+        BytesRejection,
         HeadersAlreadyExtracted,
     }
 }
@@ -211,7 +138,7 @@ composite_rejection! {
     pub enum JsonRejection {
         InvalidJsonBody,
         MissingJsonContentType,
-        BodyAlreadyExtracted,
+        BytesRejection,
         HeadersAlreadyExtracted,
     }
 }
@@ -232,43 +159,9 @@ composite_rejection! {
     ///
     /// Contains one variant for each way the [`Path`](super::Path) extractor
     /// can fail.
-    pub enum PathParamsRejection {
-        InvalidPathParam,
-        MissingRouteParams,
-    }
-}
-
-composite_rejection! {
-    /// Rejection used for [`Bytes`](bytes::Bytes).
-    ///
-    /// Contains one variant for each way the [`Bytes`](bytes::Bytes) extractor
-    /// can fail.
-    pub enum BytesRejection {
-        BodyAlreadyExtracted,
-        FailedToBufferBody,
-    }
-}
-
-composite_rejection! {
-    /// Rejection used for [`String`].
-    ///
-    /// Contains one variant for each way the [`String`] extractor can fail.
-    pub enum StringRejection {
-        BodyAlreadyExtracted,
-        FailedToBufferBody,
-        InvalidUtf8,
-    }
-}
-
-composite_rejection! {
-    /// Rejection used for [`Request<_>`].
-    ///
-    /// Contains one variant for each way the [`Request<_>`] extractor can fail.
-    ///
-    /// [`Request<_>`]: http::Request
-    pub enum RequestAlreadyExtracted {
-        BodyAlreadyExtracted,
-        HeadersAlreadyExtracted,
+    pub enum PathRejection {
+        FailedToDeserializePathParams,
+        MissingPathParams,
         ExtensionsAlreadyExtracted,
     }
 }
@@ -311,15 +204,12 @@ impl<T> IntoResponse for ContentLengthLimitRejection<T>
 where
     T: IntoResponse,
 {
-    type Body = BoxBody;
-    type BodyError = Error;
-
-    fn into_response(self) -> http::Response<Self::Body> {
+    fn into_response(self) -> Response {
         match self {
-            Self::PayloadTooLarge(inner) => inner.into_response().map(box_body),
-            Self::LengthRequired(inner) => inner.into_response().map(box_body),
-            Self::HeadersAlreadyExtracted(inner) => inner.into_response().map(box_body),
-            Self::Inner(inner) => inner.into_response().map(box_body),
+            Self::PayloadTooLarge(inner) => inner.into_response(),
+            Self::LengthRequired(inner) => inner.into_response(),
+            Self::HeadersAlreadyExtracted(inner) => inner.into_response(),
+            Self::Inner(inner) => inner.into_response(),
         }
     }
 }

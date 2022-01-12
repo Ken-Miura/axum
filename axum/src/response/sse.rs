@@ -27,15 +27,15 @@
 //! # };
 //! ```
 
-use crate::response::IntoResponse;
-use crate::BoxError;
-use bytes::Bytes;
+use crate::{
+    body::{self, Bytes, HttpBody},
+    response::{IntoResponse, Response},
+    BoxError,
+};
 use futures_util::{
     ready,
     stream::{Stream, TryStream},
 };
-use http::Response;
-use http_body::Body as HttpBody;
 use pin_project_lite::pin_project;
 use std::{
     borrow::Cow,
@@ -95,17 +95,14 @@ where
     S: Stream<Item = Result<Event, E>> + Send + 'static,
     E: Into<BoxError>,
 {
-    type Body = Body<S>;
-    type BodyError = E;
-
-    fn into_response(self) -> Response<Self::Body> {
-        let body = Body {
+    fn into_response(self) -> Response {
+        let body = body::boxed(Body {
             event_stream: SyncWrapper::new(self.stream),
             keep_alive: self.keep_alive.map(KeepAliveStream::new),
-        };
+        });
 
         Response::builder()
-            .header(http::header::CONTENT_TYPE, "text/event-stream")
+            .header(http::header::CONTENT_TYPE, mime::TEXT_EVENT_STREAM.as_ref())
             .header(http::header::CACHE_CONTROL, "no-cache")
             .body(body)
             .unwrap()
@@ -113,9 +110,7 @@ where
 }
 
 pin_project! {
-    /// The body of an SSE response.
-    #[derive(Debug)]
-    pub struct Body<S> {
+    struct Body<S> {
         #[pin]
         event_stream: SyncWrapper<S>,
         #[pin]
@@ -184,18 +179,36 @@ enum DataType {
 }
 
 impl Event {
-    /// Set Server-sent event data
-    /// data field(s) ("data:<content>")
+    /// Set the event's data data field(s) (`data:<content>`)
+    ///
+    /// Newlines in `data` will automatically be broken across `data:` fields.
+    ///
+    /// This corresponds to [`MessageEvent`'s data field].
+    ///
+    /// [`MessageEvent`'s data field]: https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/data
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data` contains any carriage returns, as they cannot be transmitted over SSE.
     pub fn data<T>(mut self, data: T) -> Event
     where
         T: Into<String>,
     {
-        self.data = Some(DataType::Text(data.into()));
+        let data = data.into();
+        assert_eq!(
+            memchr::memchr(b'\r', data.as_bytes()),
+            None,
+            "SSE data cannot contain carriage returns",
+        );
+        self.data = Some(DataType::Text(data));
         self
     }
 
-    /// Set Server-sent event data
-    /// data field(s) ("data:<content>")
+    /// Set the event's data field to a value serialized as unformatted JSON (`data:<content>`).
+    ///
+    /// This corresponds to [`MessageEvent`'s data field].
+    ///
+    /// [`MessageEvent`'s data field]: https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/data
     #[cfg(feature = "json")]
     #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
     pub fn json_data<T>(mut self, data: T) -> Result<Event, serde_json::Error>
@@ -206,40 +219,87 @@ impl Event {
         Ok(self)
     }
 
-    /// Set Server-sent event comment
-    /// Comment field (":<comment-text>")
+    /// Set the event's comment field (`:<comment-text>`).
+    ///
+    /// This field will be ignored by most SSE clients.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `comment` contains any newlines or carriage returns, as they are not allowed in
+    /// comments.
     pub fn comment<T>(mut self, comment: T) -> Event
     where
         T: Into<String>,
     {
-        self.comment = Some(comment.into());
+        let comment = comment.into();
+        assert_eq!(
+            memchr::memchr2(b'\r', b'\n', comment.as_bytes()),
+            None,
+            "SSE comment cannot contain newlines or carriage returns"
+        );
+        self.comment = Some(comment);
         self
     }
 
-    /// Set Server-sent event event
-    /// Event name field ("event:<event-name>")
+    /// Set the event's name field (`event:<event-name>`).
+    ///
+    /// This corresponds to the `type` parameter given when calling `addEventListener` on an
+    /// [`EventSource`]. For example, `.event("update")` should correspond to
+    /// `.addEventListener("update", ...)`. If no event type is given, browsers will fire a
+    /// [`message` event] instead.
+    ///
+    /// [`EventSource`]: https://developer.mozilla.org/en-US/docs/Web/API/EventSource
+    /// [`message` event]: https://developer.mozilla.org/en-US/docs/Web/API/EventSource/message_event
+    ///
+    /// # Panics
+    ///
+    /// Panics if `event` contains any newlines or carriage returns.
     pub fn event<T>(mut self, event: T) -> Event
     where
         T: Into<String>,
     {
-        self.event = Some(event.into());
+        let event = event.into();
+        assert_eq!(
+            memchr::memchr2(b'\r', b'\n', event.as_bytes()),
+            None,
+            "SSE event name cannot contain newlines or carriage returns"
+        );
+        self.event = Some(event);
         self
     }
 
-    /// Set Server-sent event retry
-    /// Retry timeout field ("retry:<timeout>")
+    /// Set the event's retry timeout field (`retry:<timeout>`).
+    ///
+    /// This sets how long clients will wait before reconnecting if they are disconnected from the
+    /// SSE endpoint. Note that this is just a hint: clients are free to wait for longer if they
+    /// wish, such as if they implement exponential backoff.
     pub fn retry(mut self, duration: Duration) -> Event {
         self.retry = Some(duration);
         self
     }
 
-    /// Set Server-sent event id
-    /// Identifier field ("id:<identifier>")
+    /// Set the event's identifier field (`id:<identifier>`).
+    ///
+    /// This corresponds to [`MessageEvent`'s `lastEventId` field]. If no ID is in the event itself,
+    /// the browser will set that field to the last known message ID, starting with the empty
+    /// string.
+    ///
+    /// [`MessageEvent`'s `lastEventId` field]: https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/lastEventId
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` contains any newlines, carriage returns or null characters.
     pub fn id<T>(mut self, id: T) -> Event
     where
         T: Into<String>,
     {
-        self.id = Some(id.into());
+        let id = id.into();
+        assert_eq!(
+            memchr::memchr3(b'\r', b'\n', b'\0', id.as_bytes()),
+            None,
+            "Event ID cannot contain newlines, carriage returns or null characters",
+        );
+        self.id = Some(id);
         self
     }
 }
@@ -253,7 +313,7 @@ impl fmt::Display for Event {
         }
 
         if let Some(event) = &self.event {
-            "event:".fmt(f)?;
+            "event: ".fmt(f)?;
             event.fmt(f)?;
             f.write_char('\n')?;
         }
@@ -261,7 +321,7 @@ impl fmt::Display for Event {
         match &self.data {
             Some(DataType::Text(data)) => {
                 for line in data.split('\n') {
-                    "data:".fmt(f)?;
+                    "data: ".fmt(f)?;
                     line.fmt(f)?;
                     f.write_char('\n')?;
                 }
@@ -276,7 +336,7 @@ impl fmt::Display for Event {
         }
 
         if let Some(id) = &self.id {
-            "id:".fmt(f)?;
+            "id: ".fmt(f)?;
             id.fmt(f)?;
             f.write_char('\n')?;
         }
@@ -388,5 +448,165 @@ impl KeepAliveStream {
         self.reset();
 
         Poll::Ready(event)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{routing::get, test_helpers::*, Router};
+    use futures::stream;
+    use std::{collections::HashMap, convert::Infallible};
+    use tokio_stream::StreamExt as _;
+
+    #[test]
+    fn leading_space_is_not_stripped() {
+        let no_leading_space = Event::default().data("\tfoobar");
+        assert_eq!(no_leading_space.to_string(), "data: \tfoobar\n\n");
+
+        let leading_space = Event::default().data(" foobar");
+        assert_eq!(leading_space.to_string(), "data:  foobar\n\n");
+    }
+
+    #[tokio::test]
+    async fn basic() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let stream = stream::iter(vec![
+                    Event::default().data("one").comment("this is a comment"),
+                    Event::default()
+                        .json_data(serde_json::json!({ "foo": "bar" }))
+                        .unwrap(),
+                    Event::default()
+                        .event("three")
+                        .retry(Duration::from_secs(30))
+                        .id("unique-id"),
+                ])
+                .map(Ok::<_, Infallible>);
+                Sse::new(stream)
+            }),
+        );
+
+        let client = TestClient::new(app);
+        let mut stream = client.get("/").send().await;
+
+        assert_eq!(stream.headers()["content-type"], "text/event-stream");
+        assert_eq!(stream.headers()["cache-control"], "no-cache");
+
+        let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+        assert_eq!(event_fields.get("data").unwrap(), "one");
+        assert_eq!(event_fields.get("comment").unwrap(), "this is a comment");
+
+        let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+        assert_eq!(event_fields.get("data").unwrap(), "{\"foo\":\"bar\"}");
+        assert!(event_fields.get("comment").is_none());
+
+        let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+        assert_eq!(event_fields.get("event").unwrap(), "three");
+        assert_eq!(event_fields.get("retry").unwrap(), "30000");
+        assert_eq!(event_fields.get("id").unwrap(), "unique-id");
+        assert!(event_fields.get("comment").is_none());
+
+        assert!(stream.chunk_text().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn keep_alive() {
+        const DELAY: Duration = Duration::from_secs(5);
+
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let stream = stream::repeat_with(|| Event::default().data("msg"))
+                    .map(Ok::<_, Infallible>)
+                    .throttle(DELAY);
+
+                Sse::new(stream).keep_alive(
+                    KeepAlive::new()
+                        .interval(Duration::from_secs(1))
+                        .text("keep-alive-text"),
+                )
+            }),
+        );
+
+        let client = TestClient::new(app);
+        let mut stream = client.get("/").send().await;
+
+        for _ in 0..5 {
+            // first message should be an event
+            let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+            assert_eq!(event_fields.get("data").unwrap(), "msg");
+
+            // then 4 seconds of keep-alive messages
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+                assert_eq!(event_fields.get("comment").unwrap(), "keep-alive-text");
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn keep_alive_ends_when_the_stream_ends() {
+        const DELAY: Duration = Duration::from_secs(5);
+
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let stream = stream::repeat_with(|| Event::default().data("msg"))
+                    .map(Ok::<_, Infallible>)
+                    .throttle(DELAY)
+                    .take(2);
+
+                Sse::new(stream).keep_alive(
+                    KeepAlive::new()
+                        .interval(Duration::from_secs(1))
+                        .text("keep-alive-text"),
+                )
+            }),
+        );
+
+        let client = TestClient::new(app);
+        let mut stream = client.get("/").send().await;
+
+        // first message should be an event
+        let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+        assert_eq!(event_fields.get("data").unwrap(), "msg");
+
+        // then 4 seconds of keep-alive messages
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+            assert_eq!(event_fields.get("comment").unwrap(), "keep-alive-text");
+        }
+
+        // then the last event
+        let event_fields = parse_event(&stream.chunk_text().await.unwrap());
+        assert_eq!(event_fields.get("data").unwrap(), "msg");
+
+        // then no more events or keep-alive messages
+        assert!(stream.chunk_text().await.is_none());
+    }
+
+    fn parse_event(payload: &str) -> HashMap<String, String> {
+        let mut fields = HashMap::new();
+
+        let mut lines = payload.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line.is_empty() {
+                assert!(lines.next().is_none());
+                break;
+            }
+
+            let (mut key, value) = line.split_once(':').unwrap();
+            let value = value.trim();
+            if key.is_empty() {
+                key = "comment";
+            }
+            fields.insert(key.to_owned(), value.to_owned());
+        }
+
+        fields
     }
 }

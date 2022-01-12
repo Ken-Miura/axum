@@ -3,9 +3,9 @@
 //! See [`Multipart`] for more details.
 
 use super::{rejection::*, BodyStream, FromRequest, RequestParts};
+use crate::body::{Bytes, HttpBody};
 use crate::BoxError;
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures_util::stream::Stream;
 use http::header::{HeaderMap, CONTENT_TYPE};
 use mime::Mime;
@@ -52,14 +52,14 @@ pub struct Multipart {
 #[async_trait]
 impl<B> FromRequest<B> for Multipart
 where
-    B: http_body::Body<Data = Bytes> + Default + Unpin + Send + 'static,
+    B: HttpBody<Data = Bytes> + Default + Unpin + Send + 'static,
     B::Error: Into<BoxError>,
 {
     type Rejection = MultipartRejection;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
         let stream = BodyStream::from_request(req).await?;
-        let headers = req.headers().ok_or(HeadersAlreadyExtracted)?;
+        let headers = req.headers().ok_or_else(HeadersAlreadyExtracted::default)?;
         let boundary = parse_boundary(headers).ok_or(InvalidBoundary)?;
         let multipart = multer::Multipart::new(stream, boundary);
         Ok(Self { inner: multipart })

@@ -41,9 +41,11 @@ where
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
         let content_length = req
             .headers()
-            .ok_or(ContentLengthLimitRejection::HeadersAlreadyExtracted(
-                HeadersAlreadyExtracted,
-            ))?
+            .ok_or_else(|| {
+                ContentLengthLimitRejection::HeadersAlreadyExtracted(
+                    HeadersAlreadyExtracted::default(),
+                )
+            })?
             .get(http::header::CONTENT_LENGTH);
 
         let content_length =
@@ -78,8 +80,7 @@ impl<T, const N: u64> Deref for ContentLengthLimit<T, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{routing::post, test_helpers::*, Router};
-    use bytes::Bytes;
+    use crate::{body::Bytes, routing::post, test_helpers::*, Router};
     use http::StatusCode;
     use serde::Deserialize;
 
@@ -88,6 +89,7 @@ mod tests {
         use std::iter::repeat;
 
         #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
         struct Input {
             foo: String,
         }
@@ -124,7 +126,7 @@ mod tests {
         let res = client
             .post("/")
             .body(reqwest::Body::wrap_stream(futures_util::stream::iter(
-                vec![Ok::<_, std::io::Error>(bytes::Bytes::new())],
+                vec![Ok::<_, std::io::Error>(Bytes::new())],
             )))
             .send()
             .await;

@@ -12,7 +12,7 @@ For more details on that see
 
 ## Applying multiple middleware
 
-Its recommended to use [`tower::ServiceBuilder`] to apply multiple middleware at
+It's recommended to use [`tower::ServiceBuilder`] to apply multiple middleware at
 once, instead of calling [`Router::layer`] repeatedly:
 
 ```rust
@@ -55,11 +55,12 @@ compatible with axum. Some commonly used middleware are:
 
 ```rust,no_run
 use axum::{
-    body::{Body, BoxBody},
-    routing::get,
-    http::{Request, Response},
-    error_handling::HandleErrorLayer,
+	response::Response,
     Router,
+    body::{Body, BoxBody},
+    error_handling::HandleErrorLayer,
+    http::Request,
+    routing::get,
 };
 use tower::{
     filter::AsyncFilterLayer,
@@ -69,7 +70,7 @@ use tower::{
 use std::convert::Infallible;
 use tower_http::trace::TraceLayer;
 #
-# fn handle_error<T>(error: T) -> axum::http::StatusCode {
+# async fn handle_error<T>(error: T) -> axum::http::StatusCode {
 #     axum::http::StatusCode::INTERNAL_SERVER_ERROR
 # }
 
@@ -90,7 +91,7 @@ async fn map_request(req: Request<Body>) -> Result<Request<Body>, Infallible> {
     Ok(req)
 }
 
-async fn map_response(res: Response<BoxBody>) -> Result<Response<BoxBody>, Infallible> {
+async fn map_response(res: Response) -> Result<Response, Infallible> {
     Ok(res)
 }
 
@@ -106,16 +107,25 @@ Additionally axum provides [`extract::extractor_middleware()`] for converting
 any extractor into a middleware. See [`extract::extractor_middleware()`] for
 more details.
 
-## Writing your own middleware
+## Writing your own middleware with `axum_extra::middleware::from_fn`
 
-You can also write you own middleware by implementing [`tower::Service`]:
+The easiest way to write a custom middleware is using
+[`axum_extra::middleware::from_fn`]. See that function for more details.
+
+[`axum_extra::middleware::from_fn`]: https://docs.rs/axum-extra/0.1/axum_extra/middleware/middleware_fn/fn.from_fn.html
+
+## Writing your own middleware with `tower::Service`
+
+For maximum control (and a more low level API) you can write you own middleware
+by implementing [`tower::Service`]:
 
 ```rust
 use axum::{
-    body::{Body, BoxBody},
-    routing::get,
-    http::{Request, Response},
+    response::Response,
     Router,
+    body::{Body, BoxBody},
+    http::Request,
+    routing::get,
 };
 use futures::future::BoxFuture;
 use tower::{Service, layer::layer_fn};
@@ -128,7 +138,7 @@ struct MyMiddleware<S> {
 
 impl<S> Service<Request<Body>> for MyMiddleware<S>
 where
-    S: Service<Request<Body>, Response = Response<BoxBody>> + Clone + Send + 'static,
+    S: Service<Request<Body>, Response = Response> + Clone + Send + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -148,7 +158,7 @@ where
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
         Box::pin(async move {
-            let res: Response<BoxBody> = inner.call(req).await?;
+            let res: Response = inner.call(req).await?;
 
             println!("`MyMiddleware` received the response");
 

@@ -1,22 +1,23 @@
 use super::{FromRequest, RequestParts};
-use crate::response::IntoResponse;
+use crate::response::{IntoResponse, Response};
 use async_trait::async_trait;
-use bytes::Bytes;
 use headers::HeaderMapExt;
-use http_body::Full;
-use std::{convert::Infallible, ops::Deref};
+use std::ops::Deref;
 
 /// Extractor that extracts a typed header value from [`headers`].
+///
+/// In general, it's recommended to extract only the needed headers via `TypedHeader` rather than
+/// removing all headers with the `HeaderMap` extractor.
 ///
 /// # Example
 ///
 /// ```rust,no_run
 /// use axum::{
 ///     extract::TypedHeader,
+///     headers::UserAgent,
 ///     routing::get,
 ///     Router,
 /// };
-/// use headers::UserAgent;
 ///
 /// async fn users_teams_show(
 ///     TypedHeader(user_agent): TypedHeader<UserAgent>,
@@ -105,10 +106,7 @@ pub enum TypedHeaderRejectionReason {
 }
 
 impl IntoResponse for TypedHeaderRejection {
-    type Body = Full<Bytes>;
-    type BodyError = Infallible;
-
-    fn into_response(self) -> http::Response<Self::Body> {
+    fn into_response(self) -> Response {
         let mut res = self.to_string().into_response();
         *res.status_mut() = http::StatusCode::BAD_REQUEST;
         res

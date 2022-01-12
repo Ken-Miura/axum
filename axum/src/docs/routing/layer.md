@@ -27,7 +27,7 @@ async fn second_handler() {}
 
 async fn third_handler() {}
 
-// All requests to `handler` and `other_handler` will be sent through
+// All requests to `first_handler` and `second_handler` will be sent through
 // `ConcurrencyLimit`
 let app = Router::new().route("/", get(first_handler))
     .route("/foo", get(second_handler))
@@ -124,7 +124,9 @@ let app = Router::new()
         ServiceBuilder::new()
             // this middleware goes above `TimeoutLayer` because it will receive
             // errors returned by `TimeoutLayer`
-            .layer(HandleErrorLayer::new(|_: BoxError| StatusCode::REQUEST_TIMEOUT))
+            .layer(HandleErrorLayer::new(|_: BoxError| async {
+                StatusCode::REQUEST_TIMEOUT
+            }))
             .layer(TimeoutLayer::new(Duration::from_secs(10)))
     );
 # async {

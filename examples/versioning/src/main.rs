@@ -6,15 +6,13 @@
 
 use axum::{
     async_trait,
-    body::{Bytes, Full},
     extract::{FromRequest, Path, RequestParts},
-    http::{Response, StatusCode},
-    response::IntoResponse,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
-use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 #[tokio::main]
 async fn main() {
@@ -52,7 +50,7 @@ impl<B> FromRequest<B> for Version
 where
     B: Send,
 {
-    type Rejection = Response<Full<Bytes>>;
+    type Rejection = Response;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
         let params = Path::<HashMap<String, String>>::from_request(req)

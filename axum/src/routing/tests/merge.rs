@@ -1,5 +1,8 @@
 use super::*;
-use crate::{error_handling::HandleErrorLayer, extract::OriginalUri, response::IntoResponse, Json};
+use crate::{
+    body::HttpBody, error_handling::HandleErrorLayer, extract::OriginalUri, response::IntoResponse,
+    Json,
+};
 use serde_json::{json, Value};
 use tower::{limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
@@ -62,7 +65,7 @@ async fn multiple_ors_balanced_differently() {
     async fn test<S, ResBody>(name: &str, app: S)
     where
         S: Service<Request<Body>, Response = Response<ResBody>> + Clone + Send + 'static,
-        ResBody: http_body::Body + Send + 'static,
+        ResBody: HttpBody + Send + 'static,
         ResBody::Data: Send,
         ResBody::Error: Into<BoxError>,
         S::Future: Send,
@@ -137,7 +140,9 @@ async fn layer_and_handle_error() {
         .route("/timeout", get(futures::future::pending::<()>))
         .layer(
             ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(|_| StatusCode::REQUEST_TIMEOUT))
+                .layer(HandleErrorLayer::new(|_| async {
+                    StatusCode::REQUEST_TIMEOUT
+                }))
                 .layer(TimeoutLayer::new(Duration::from_millis(10))),
         );
     let app = one.merge(two);
@@ -196,18 +201,18 @@ async fn many_ors() {
 
 #[tokio::test]
 async fn services() {
-    use crate::routing::service_method_routing::get;
+    use crate::routing::get_service;
 
     let app = Router::new()
         .route(
             "/foo",
-            get(service_fn(|_: Request<Body>| async {
+            get_service(service_fn(|_: Request<Body>| async {
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             })),
         )
         .merge(Router::new().route(
             "/bar",
-            get(service_fn(|_: Request<Body>| async {
+            get_service(service_fn(|_: Request<Body>| async {
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             })),
         ));

@@ -1,7 +1,7 @@
+use tower_http::services::ServeDir;
+
 use super::*;
-use crate::body::box_body;
-use crate::error_handling::HandleErrorExt;
-use crate::extract::Extension;
+use crate::{body::boxed, extract::Extension};
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -78,7 +78,43 @@ async fn wrong_method_nest() {
 }
 
 #[tokio::test]
-async fn nesting_at_root() {
+async fn nesting_router_at_root() {
+    let nested = Router::new().route("/foo", get(|uri: Uri| async move { uri.to_string() }));
+    let app = Router::new().nest("/", nested);
+
+    let client = TestClient::new(app);
+
+    let res = client.get("/").send().await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    let res = client.get("/foo").send().await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.text().await, "/foo");
+
+    let res = client.get("/foo/bar").send().await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn nesting_router_at_empty_path() {
+    let nested = Router::new().route("/foo", get(|uri: Uri| async move { uri.to_string() }));
+    let app = Router::new().nest("", nested);
+
+    let client = TestClient::new(app);
+
+    let res = client.get("/").send().await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    let res = client.get("/foo").send().await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.text().await, "/foo");
+
+    let res = client.get("/foo/bar").send().await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn nesting_handler_at_root() {
     let app = Router::new().nest("/", get(|uri: Uri| async move { uri.to_string() }));
 
     let client = TestClient::new(app);
@@ -151,7 +187,7 @@ async fn nested_service_sees_stripped_uri() {
             Router::new().route(
                 "/baz",
                 service_fn(|req: Request<Body>| async move {
-                    let body = box_body(Body::from(req.uri().to_string()));
+                    let body = boxed(Body::from(req.uri().to_string()));
                     Ok::<_, Infallible>(Response::new(body))
                 }),
             ),
@@ -169,7 +205,7 @@ async fn nested_service_sees_stripped_uri() {
 async fn nest_static_file_server() {
     let app = Router::new().nest(
         "/static",
-        service::get(tower_http::services::ServeDir::new(".")).handle_error(|error| {
+        get_service(ServeDir::new(".")).handle_error(|error| async move {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Unhandled internal error: {}", error),

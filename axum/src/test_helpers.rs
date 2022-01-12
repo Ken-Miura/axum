@@ -1,13 +1,17 @@
 #![allow(clippy::blacklisted_name)]
 
+use crate::body::HttpBody;
 use crate::BoxError;
+use bytes::Bytes;
 use http::{
     header::{HeaderName, HeaderValue},
     Request, StatusCode,
 };
 use hyper::{Body, Server};
-use std::net::SocketAddr;
-use std::{convert::TryFrom, net::TcpListener};
+use std::{
+    convert::TryFrom,
+    net::{SocketAddr, TcpListener},
+};
 use tower::make::Shared;
 use tower_service::Service;
 
@@ -26,7 +30,7 @@ impl TestClient {
     pub(crate) fn new<S, ResBody>(svc: S) -> Self
     where
         S: Service<Request<Body>, Response = http::Response<ResBody>> + Clone + Send + 'static,
-        ResBody: http_body::Body + Send + 'static,
+        ResBody: HttpBody + Send + 'static,
         ResBody::Data: Send,
         ResBody::Error: Into<BoxError>,
         S::Future: Send,
@@ -128,5 +132,18 @@ impl TestResponse {
 
     pub(crate) fn status(&self) -> StatusCode {
         self.response.status()
+    }
+
+    pub(crate) fn headers(&self) -> &http::HeaderMap {
+        self.response.headers()
+    }
+
+    pub(crate) async fn chunk(&mut self) -> Option<Bytes> {
+        self.response.chunk().await.unwrap()
+    }
+
+    pub(crate) async fn chunk_text(&mut self) -> Option<String> {
+        let chunk = self.chunk().await?;
+        Some(String::from_utf8(chunk.to_vec()).unwrap())
     }
 }

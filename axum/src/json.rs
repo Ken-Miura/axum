@@ -1,21 +1,16 @@
-use crate::BoxError;
 use crate::{
-    extract::{rejection::*, take_body, FromRequest, RequestParts},
-    response::IntoResponse,
+    body::{self, Bytes, Full, HttpBody},
+    extract::{rejection::*, FromRequest, RequestParts},
+    response::{IntoResponse, Response},
+    BoxError,
 };
 use async_trait::async_trait;
-use bytes::Bytes;
 use http::{
     header::{self, HeaderValue},
     StatusCode,
 };
-use http_body::Full;
-use hyper::Response;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{
-    convert::Infallible,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 /// JSON Extractor / Response.
 ///
@@ -50,8 +45,8 @@ use std::{
 /// # };
 /// ```
 ///
-/// When used as a response, it can serialize any type that implements [`serde::Serialize`] to `JSON`,
-/// and will automatically set `Content-Type: application/json` header.
+/// When used as a response, it can serialize any type that implements [`serde::Serialize`] to
+/// `JSON`, and will automatically set `Content-Type: application/json` header.
 ///
 /// # Response example
 ///
@@ -94,23 +89,17 @@ pub struct Json<T>(pub T);
 impl<T, B> FromRequest<B> for Json<T>
 where
     T: DeserializeOwned,
-    B: http_body::Body + Send,
+    B: HttpBody + Send,
     B::Data: Send,
     B::Error: Into<BoxError>,
 {
     type Rejection = JsonRejection;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        use bytes::Buf;
-
         if json_content_type(req)? {
-            let body = take_body(req)?;
+            let bytes = Bytes::from_request(req).await?;
 
-            let buf = hyper::body::aggregate(body)
-                .await
-                .map_err(InvalidJsonBody::from_err)?;
-
-            let value = serde_json::from_reader(buf.reader()).map_err(InvalidJsonBody::from_err)?;
+            let value = serde_json::from_slice(&bytes).map_err(InvalidJsonBody::from_err)?;
 
             Ok(Json(value))
         } else {
@@ -122,7 +111,7 @@ where
 fn json_content_type<B>(req: &RequestParts<B>) -> Result<bool, HeadersAlreadyExtracted> {
     let content_type = if let Some(content_type) = req
         .headers()
-        .ok_or(HeadersAlreadyExtracted)?
+        .ok_or_else(HeadersAlreadyExtracted::default)?
         .get(header::CONTENT_TYPE)
     {
         content_type
@@ -143,7 +132,7 @@ fn json_content_type<B>(req: &RequestParts<B>) -> Result<bool, HeadersAlreadyExt
     };
 
     let is_json_content_type = mime.type_() == "application"
-        && (mime.subtype() == "json" || mime.suffix().filter(|name| *name == "json").is_some());
+        && (mime.subtype() == "json" || mime.suffix().map_or(false, |name| name == "json"));
 
     Ok(is_json_content_type)
 }
@@ -172,25 +161,25 @@ impl<T> IntoResponse for Json<T>
 where
     T: Serialize,
 {
-    type Body = Full<Bytes>;
-    type BodyError = Infallible;
-
-    fn into_response(self) -> Response<Self::Body> {
+    fn into_response(self) -> Response {
         let bytes = match serde_json::to_vec(&self.0) {
             Ok(res) => res,
             Err(err) => {
                 return Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(header::CONTENT_TYPE, "text/plain")
-                    .body(Full::from(err.to_string()))
+                    .header(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
+                    )
+                    .body(body::boxed(Full::from(err.to_string())))
                     .unwrap();
             }
         };
 
-        let mut res = Response::new(Full::from(bytes));
+        let mut res = Response::new(body::boxed(Full::from(bytes)));
         res.headers_mut().insert(
             header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
+            HeaderValue::from_static(mime::APPLICATION_JSON.as_ref()),
         );
         res
     }

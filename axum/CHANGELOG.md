@@ -7,7 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
-- None
+- **fixed:** Fix using incorrect path prefix when nesting `Router`s at `/` ([#691])
+- **fixed:** Make `nest("", service)` work and mean the same as `nest("/", service)` ([#691])
+- **fixed:** Replace response code `301` with `308` for trailing slash redirects. Also deprecates
+  `Redirect::found` (`302`) in favor of `Redirect::temporary` (`307`) or `Redirect::to` (`303`).
+  This is to prevent clients from changing non-`GET` requests to `GET` requests ([#682])
+
+[#691]: https://github.com/tokio-rs/axum/pull/691
+[#682]: https://github.com/tokio-rs/axum/pull/682
+
+# 0.4.3 (21. December, 2021)
+
+- **added:** `axum::AddExtension::layer` ([#607])
+- **added:** Re-export the headers crate when the headers feature is active ([#630])
+- **fixed:** `sse::Event` will no longer drop the leading space of data, event ID and name values
+  that have it ([#600])
+- **fixed:** `sse::Event` is more strict about what field values it supports, disallowing any SSE
+  events that break the specification (such as field values containing carriage returns) ([#599])
+- **fixed:** Improve documentation of `sse::Event` ([#601])
+- **fixed:** Make `Path` fail with `ExtensionsAlreadyExtracted` if another extractor (such as
+  `Request`) has previously taken the request extensions. Thus `PathRejection` now contains a
+  variant with `ExtensionsAlreadyExtracted`. This is not a breaking change since `PathRejection` is
+  marked as `#[non_exhaustive]` ([#619])
+- **fixed:** Fix misleading error message for `PathRejection` if extensions had
+  previously been extracted ([#619])
+- **fixed:** Use `AtomicU32` internally, rather than `AtomicU64`, to improve portability ([#616])
+
+[#599]: https://github.com/tokio-rs/axum/pull/599
+[#600]: https://github.com/tokio-rs/axum/pull/600
+[#601]: https://github.com/tokio-rs/axum/pull/601
+[#607]: https://github.com/tokio-rs/axum/pull/607
+[#616]: https://github.com/tokio-rs/axum/pull/616
+[#619]: https://github.com/tokio-rs/axum/pull/619
+[#619]: https://github.com/tokio-rs/axum/pull/619
+[#630]: https://github.com/tokio-rs/axum/pull/630
+
+# 0.4.2 (06. December, 2021)
+
+- **fix:** Depend on the correct version of `axum-core` ([#592])
+
+[#592]: https://github.com/tokio-rs/axum/pull/592
+
+# 0.4.1 (06. December, 2021)
+
+- **added:** `axum::response::Response` now exists as a shorthand for writing `Response<BoxBody>` ([#590])
+
+[#590]: https://github.com/tokio-rs/axum/pull/590
+
+# 0.4.0 (02. December, 2021)
+
+- **breaking:** New `MethodRouter` that works similarly to `Router`:
+  - Route to handlers and services with the same type
+  - Add middleware to some routes more easily with `MethodRouter::layer` and
+    `MethodRouter::route_layer`.
+  - Merge method routers with `MethodRouter::merge`
+  - Customize response for unsupported methods with `MethodRouter::fallback`
+- **breaking:** The default for the type parameter in `FromRequest` and
+  `RequestParts` has been removed. Use `FromRequest<Body>` and
+  `RequestParts<Body>` to get the previous behavior ([#564])
+- **added:** `FromRequest` and `IntoResponse` are now defined in a new called
+  `axum-core`. This crate is intended for library authors to depend on, rather
+  than `axum` itself, if possible. `axum-core` has a smaller API and will thus
+  receive fewer breaking changes. `FromRequest` and `IntoResponse` are
+  re-exported from `axum` in the same location so nothing is changed for `axum`
+  users ([#564])
+- **breaking:** The previously deprecated `axum::body::box_body` function has
+  been removed. Use `axum::body::boxed` instead.
+- **fixed:** Adding the same route with different methods now works ie
+  `.route("/", get(_)).route("/", post(_))`.
+- **breaking:** `routing::handler_method_router` and
+  `routing::service_method_router` has been removed in favor of
+  `routing::{get, get_service, ..., MethodRouter}`.
+- **breaking:** `HandleErrorExt` has been removed in favor of
+  `MethodRouter::handle_error`.
+- **breaking:** `HandleErrorLayer` now requires the handler function to be
+  `async` ([#534])
+- **added:** `HandleErrorLayer` now supports running extractors.
+- **breaking:** The `Handler<B, T>` trait is now defined as `Handler<T, B =
+  Body>`. That is the type parameters have been swapped and `B` defaults to
+  `axum::body::Body` ([#527])
+- **breaking:** `Router::merge` will panic if both routers have fallbacks.
+  Previously the left side fallback would be silently discarded ([#529])
+- **breaking:** `Router::nest` will panic if the nested router has a fallback.
+  Previously it would be silently discarded ([#529])
+- Update WebSockets to use tokio-tungstenite 0.16 ([#525])
+- **added:** Default to return `charset=utf-8` for text content type. ([#554])
+- **breaking:** The `Body` and `BodyError` associated types on the
+  `IntoResponse` trait have been removed - instead, `.into_response()` will now
+  always return `Response<BoxBody>` ([#571])
+- **breaking:** `PathParamsRejection` has been renamed to `PathRejection` and its
+  variants renamed to `FailedToDeserializePathParams` and `MissingPathParams`. This
+  makes it more consistent with the rest of axum ([#574])
+- **added:** `Path`'s rejection type now provides data about exactly which part of
+  the path couldn't be deserialized ([#574])
+
+[#525]: https://github.com/tokio-rs/axum/pull/525
+[#527]: https://github.com/tokio-rs/axum/pull/527
+[#529]: https://github.com/tokio-rs/axum/pull/529
+[#534]: https://github.com/tokio-rs/axum/pull/534
+[#554]: https://github.com/tokio-rs/axum/pull/554
+[#564]: https://github.com/tokio-rs/axum/pull/564
+[#571]: https://github.com/tokio-rs/axum/pull/571
+[#574]: https://github.com/tokio-rs/axum/pull/574
+
+# 0.3.4 (13. November, 2021)
+
+- **change:** `box_body` has been renamed to `boxed`. `box_body` still exists
+  but is deprecated ([#530])
+
+[#530]: https://github.com/tokio-rs/axum/pull/530
+
+# 0.3.3 (13. November, 2021)
+
+- Implement `FromRequest` for [`http::request::Parts`] so it can be used an
+  extractor ([#489])
+- Implement `IntoResponse` for `http::response::Parts` ([#490])
+
+[#489]: https://github.com/tokio-rs/axum/pull/489
+[#490]: https://github.com/tokio-rs/axum/pull/490
+[`http::request::Parts`]: https://docs.rs/http/latest/http/request/struct.Parts.html
+
+# 0.3.2 (08. November, 2021)
+
+- **added:** Add `Router::route_layer` for applying middleware that
+  will only run on requests that match a route. This is useful for middleware
+  that return early, such as authorization ([#474])
+
+[#474]: https://github.com/tokio-rs/axum/pull/474
+
+# 0.3.1 (06. November, 2021)
+
+- **fixed:** Implement `Clone` for `IntoMakeServiceWithConnectInfo` ([#471])
+
+[#471]: https://github.com/tokio-rs/axum/pull/471
 
 # 0.3.0 (02. November, 2021)
 
@@ -350,7 +482,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 - SSE:
   - **added:** Add `response::sse::Sse`. This implements SSE using a response rather than a service ([#98](https://github.com/tokio-rs/axum/pull/98))
-  - **changed:** Remove `axum::sse`. Its been replaced by `axum::response::sse` ([#98](https://github.com/tokio-rs/axum/pull/98))
+  - **changed:** Remove `axum::sse`. It has been replaced by `axum::response::sse` ([#98](https://github.com/tokio-rs/axum/pull/98))
 
   Handler using SSE in 0.1:
   ```rust
