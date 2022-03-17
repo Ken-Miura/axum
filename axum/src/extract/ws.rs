@@ -64,7 +64,7 @@
 //! [`StreamExt::split`]: https://docs.rs/futures/0.3.17/futures/stream/trait.StreamExt.html#method.split
 
 use self::rejection::*;
-use super::{rejection::*, FromRequest, RequestParts};
+use super::{FromRequest, RequestParts};
 use crate::{
     body::{self, Bytes},
     response::Response,
@@ -103,6 +103,7 @@ use tokio_tungstenite::{
 ///
 /// See the [module docs](self) for an example.
 #[derive(Debug)]
+#[cfg_attr(docsrs, doc(cfg(feature = "ws")))]
 pub struct WebSocketUpgrade {
     config: WebSocketConfig,
     /// The chosen protocol sent in the `Sec-WebSocket-Protocol` header of the response.
@@ -201,7 +202,7 @@ impl WebSocketUpgrade {
     pub fn on_upgrade<F, Fut>(self, callback: F) -> Response
     where
         F: FnOnce(WebSocket) -> Fut + Send + 'static,
-        Fut: Future + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
     {
         let on_upgrade = self.on_upgrade;
         let config = self.config;
@@ -249,39 +250,28 @@ where
             return Err(MethodNotGet.into());
         }
 
-        if !header_contains(req, header::CONNECTION, "upgrade")? {
+        if !header_contains(req, header::CONNECTION, "upgrade") {
             return Err(InvalidConnectionHeader.into());
         }
 
-        if !header_eq(req, header::UPGRADE, "websocket")? {
+        if !header_eq(req, header::UPGRADE, "websocket") {
             return Err(InvalidUpgradeHeader.into());
         }
 
-        if !header_eq(req, header::SEC_WEBSOCKET_VERSION, "13")? {
+        if !header_eq(req, header::SEC_WEBSOCKET_VERSION, "13") {
             return Err(InvalidWebSocketVersionHeader.into());
         }
 
-        let sec_websocket_key = if let Some(key) = req
-            .headers_mut()
-            .ok_or_else(HeadersAlreadyExtracted::default)?
-            .remove(header::SEC_WEBSOCKET_KEY)
-        {
-            key
-        } else {
-            return Err(WebSocketKeyHeaderMissing.into());
-        };
+        let sec_websocket_key =
+            if let Some(key) = req.headers_mut().remove(header::SEC_WEBSOCKET_KEY) {
+                key
+            } else {
+                return Err(WebSocketKeyHeaderMissing.into());
+            };
 
-        let on_upgrade = req
-            .extensions_mut()
-            .ok_or_else(ExtensionsAlreadyExtracted::default)?
-            .remove::<OnUpgrade>()
-            .unwrap();
+        let on_upgrade = req.extensions_mut().remove::<OnUpgrade>().unwrap();
 
-        let sec_websocket_protocol = req
-            .headers()
-            .ok_or_else(HeadersAlreadyExtracted::default)?
-            .get(header::SEC_WEBSOCKET_PROTOCOL)
-            .cloned();
+        let sec_websocket_protocol = req.headers().get(header::SEC_WEBSOCKET_PROTOCOL).cloned();
 
         Ok(Self {
             config: Default::default(),
@@ -293,41 +283,25 @@ where
     }
 }
 
-fn header_eq<B>(
-    req: &RequestParts<B>,
-    key: HeaderName,
-    value: &'static str,
-) -> Result<bool, HeadersAlreadyExtracted> {
-    if let Some(header) = req
-        .headers()
-        .ok_or_else(HeadersAlreadyExtracted::default)?
-        .get(&key)
-    {
-        Ok(header.as_bytes().eq_ignore_ascii_case(value.as_bytes()))
+fn header_eq<B>(req: &RequestParts<B>, key: HeaderName, value: &'static str) -> bool {
+    if let Some(header) = req.headers().get(&key) {
+        header.as_bytes().eq_ignore_ascii_case(value.as_bytes())
     } else {
-        Ok(false)
+        false
     }
 }
 
-fn header_contains<B>(
-    req: &RequestParts<B>,
-    key: HeaderName,
-    value: &'static str,
-) -> Result<bool, HeadersAlreadyExtracted> {
-    let header = if let Some(header) = req
-        .headers()
-        .ok_or_else(HeadersAlreadyExtracted::default)?
-        .get(&key)
-    {
+fn header_contains<B>(req: &RequestParts<B>, key: HeaderName, value: &'static str) -> bool {
+    let header = if let Some(header) = req.headers().get(&key) {
         header
     } else {
-        return Ok(false);
+        return false;
     };
 
     if let Ok(header) = std::str::from_utf8(header.as_bytes()) {
-        Ok(header.to_ascii_lowercase().contains(value))
+        header.to_ascii_lowercase().contains(value)
     } else {
-        Ok(false)
+        false
     }
 }
 
@@ -363,13 +337,17 @@ impl Stream for WebSocket {
     type Item = Result<Message, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.inner.poll_next_unpin(cx).map(|option_msg| {
-            option_msg.map(|result_msg| {
-                result_msg
-                    .map_err(Error::new)
-                    .map(Message::from_tungstenite)
-            })
-        })
+        loop {
+            match futures_util::ready!(self.inner.poll_next_unpin(cx)) {
+                Some(Ok(msg)) => {
+                    if let Some(msg) = Message::from_tungstenite(msg) {
+                        return Poll::Ready(Some(Ok(msg)));
+                    }
+                }
+                Some(Err(err)) => return Poll::Ready(Some(Err(Error::new(err)))),
+                None => return Poll::Ready(None),
+            }
+        }
     }
 }
 
@@ -470,17 +448,20 @@ impl Message {
         }
     }
 
-    fn from_tungstenite(message: ts::Message) -> Self {
+    fn from_tungstenite(message: ts::Message) -> Option<Self> {
         match message {
-            ts::Message::Text(text) => Self::Text(text),
-            ts::Message::Binary(binary) => Self::Binary(binary),
-            ts::Message::Ping(ping) => Self::Ping(ping),
-            ts::Message::Pong(pong) => Self::Pong(pong),
-            ts::Message::Close(Some(close)) => Self::Close(Some(CloseFrame {
+            ts::Message::Text(text) => Some(Self::Text(text)),
+            ts::Message::Binary(binary) => Some(Self::Binary(binary)),
+            ts::Message::Ping(ping) => Some(Self::Ping(ping)),
+            ts::Message::Pong(pong) => Some(Self::Pong(pong)),
+            ts::Message::Close(Some(close)) => Some(Self::Close(Some(CloseFrame {
                 code: close.code.into(),
                 reason: close.reason,
-            })),
-            ts::Message::Close(None) => Self::Close(None),
+            }))),
+            ts::Message::Close(None) => Some(Self::Close(None)),
+            // we can ignore `Frame` frames as recommended by the tungstenite maintainers
+            // https://github.com/snapview/tungstenite-rs/issues/268
+            ts::Message::Frame(_) => None,
         }
     }
 
@@ -537,8 +518,6 @@ fn sign(key: &[u8]) -> HeaderValue {
 pub mod rejection {
     //! WebSocket specific rejections.
 
-    use crate::extract::rejection::*;
-
     define_rejection! {
         #[status = METHOD_NOT_ALLOWED]
         #[body = "Request method must be `GET`"]
@@ -585,8 +564,6 @@ pub mod rejection {
             InvalidUpgradeHeader,
             InvalidWebSocketVersionHeader,
             WebSocketKeyHeaderMissing,
-            HeadersAlreadyExtracted,
-            ExtensionsAlreadyExtracted,
         }
     }
 }

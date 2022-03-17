@@ -1,7 +1,6 @@
-use crate::response::IntoResponse;
-
 use super::{rejection::*, FromRequest, RequestParts};
 use async_trait::async_trait;
+use axum_core::response::IntoResponse;
 use std::ops::Deref;
 
 /// Extractor that will reject requests with a body larger than some size.
@@ -39,14 +38,7 @@ where
     type Rejection = ContentLengthLimitRejection<T::Rejection>;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let content_length = req
-            .headers()
-            .ok_or_else(|| {
-                ContentLengthLimitRejection::HeadersAlreadyExtracted(
-                    HeadersAlreadyExtracted::default(),
-                )
-            })?
-            .get(http::header::CONTENT_LENGTH);
+        let content_length = req.headers().get(http::header::CONTENT_LENGTH);
 
         let content_length =
             content_length.and_then(|value| value.to_str().ok()?.parse::<u64>().ok());

@@ -6,7 +6,6 @@
 
 use self::rejection::*;
 use crate::response::IntoResponse;
-use crate::Error;
 use async_trait::async_trait;
 use http::{Extensions, HeaderMap, Method, Request, Uri, Version};
 use std::convert::Infallible;
@@ -78,8 +77,8 @@ pub struct RequestParts<B> {
     method: Method,
     uri: Uri,
     version: Version,
-    headers: Option<HeaderMap>,
-    extensions: Option<Extensions>,
+    headers: HeaderMap,
+    extensions: Extensions,
     body: Option<B>,
 }
 
@@ -108,63 +107,39 @@ impl<B> RequestParts<B> {
             method,
             uri,
             version,
-            headers: Some(headers),
-            extensions: Some(extensions),
+            headers,
+            extensions,
             body: Some(body),
         }
     }
 
     /// Convert this `RequestParts` back into a [`Request`].
     ///
-    /// Fails if
+    /// Fails if The request body has been extracted, that is [`take_body`] has
+    /// been called.
     ///
-    /// - The full [`HeaderMap`] has been extracted, that is [`take_headers`]
-    /// have been called.
-    /// - The full [`Extensions`] has been extracted, that is
-    /// [`take_extensions`] have been called.
-    /// - The request body has been extracted, that is [`take_body`] have been
-    /// called.
-    ///
-    /// [`take_headers`]: RequestParts::take_headers
-    /// [`take_extensions`]: RequestParts::take_extensions
     /// [`take_body`]: RequestParts::take_body
-    pub fn try_into_request(self) -> Result<Request<B>, Error> {
+    pub fn try_into_request(self) -> Result<Request<B>, BodyAlreadyExtracted> {
         let Self {
             method,
             uri,
             version,
-            mut headers,
-            mut extensions,
+            headers,
+            extensions,
             mut body,
         } = self;
 
         let mut req = if let Some(body) = body.take() {
             Request::new(body)
         } else {
-            return Err(Error::new(RequestAlreadyExtracted::BodyAlreadyExtracted(
-                BodyAlreadyExtracted,
-            )));
+            return Err(BodyAlreadyExtracted);
         };
 
         *req.method_mut() = method;
         *req.uri_mut() = uri;
         *req.version_mut() = version;
-
-        if let Some(headers) = headers.take() {
-            *req.headers_mut() = headers;
-        } else {
-            return Err(Error::new(
-                RequestAlreadyExtracted::HeadersAlreadyExtracted(HeadersAlreadyExtracted),
-            ));
-        }
-
-        if let Some(extensions) = extensions.take() {
-            *req.extensions_mut() = extensions;
-        } else {
-            return Err(Error::new(
-                RequestAlreadyExtracted::ExtensionsAlreadyExtracted(ExtensionsAlreadyExtracted),
-            ));
-        }
+        *req.headers_mut() = headers;
+        *req.extensions_mut() = extensions;
 
         Ok(req)
     }
@@ -200,41 +175,23 @@ impl<B> RequestParts<B> {
     }
 
     /// Gets a reference to the request headers.
-    ///
-    /// Returns `None` if the headers has been taken by another extractor.
-    pub fn headers(&self) -> Option<&HeaderMap> {
-        self.headers.as_ref()
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
     }
 
     /// Gets a mutable reference to the request headers.
-    ///
-    /// Returns `None` if the headers has been taken by another extractor.
-    pub fn headers_mut(&mut self) -> Option<&mut HeaderMap> {
-        self.headers.as_mut()
-    }
-
-    /// Takes the headers out of the request, leaving a `None` in its place.
-    pub fn take_headers(&mut self) -> Option<HeaderMap> {
-        self.headers.take()
+    pub fn headers_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
     }
 
     /// Gets a reference to the request extensions.
-    ///
-    /// Returns `None` if the extensions has been taken by another extractor.
-    pub fn extensions(&self) -> Option<&Extensions> {
-        self.extensions.as_ref()
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 
     /// Gets a mutable reference to the request extensions.
-    ///
-    /// Returns `None` if the extensions has been taken by another extractor.
-    pub fn extensions_mut(&mut self) -> Option<&mut Extensions> {
-        self.extensions.as_mut()
-    }
-
-    /// Takes the extensions out of the request, leaving a `None` in its place.
-    pub fn take_extensions(&mut self) -> Option<Extensions> {
-        self.extensions.take()
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 
     /// Gets a reference to the request body.

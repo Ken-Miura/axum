@@ -1,10 +1,10 @@
 use crate::{
-    body::{self, Bytes, Full, HttpBody},
+    body::{Bytes, HttpBody},
     extract::{rejection::*, FromRequest, RequestParts},
-    response::{IntoResponse, Response},
     BoxError,
 };
 use async_trait::async_trait;
+use axum_core::response::{IntoResponse, Response};
 use http::{
     header::{self, HeaderValue},
     StatusCode,
@@ -96,7 +96,7 @@ where
     type Rejection = JsonRejection;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        if json_content_type(req)? {
+        if json_content_type(req) {
             let bytes = Bytes::from_request(req).await?;
 
             let value = serde_json::from_slice(&bytes).map_err(InvalidJsonBody::from_err)?;
@@ -108,33 +108,29 @@ where
     }
 }
 
-fn json_content_type<B>(req: &RequestParts<B>) -> Result<bool, HeadersAlreadyExtracted> {
-    let content_type = if let Some(content_type) = req
-        .headers()
-        .ok_or_else(HeadersAlreadyExtracted::default)?
-        .get(header::CONTENT_TYPE)
-    {
+fn json_content_type<B>(req: &RequestParts<B>) -> bool {
+    let content_type = if let Some(content_type) = req.headers().get(header::CONTENT_TYPE) {
         content_type
     } else {
-        return Ok(false);
+        return false;
     };
 
     let content_type = if let Ok(content_type) = content_type.to_str() {
         content_type
     } else {
-        return Ok(false);
+        return false;
     };
 
     let mime = if let Ok(mime) = content_type.parse::<mime::Mime>() {
         mime
     } else {
-        return Ok(false);
+        return false;
     };
 
     let is_json_content_type = mime.type_() == "application"
         && (mime.subtype() == "json" || mime.suffix().map_or(false, |name| name == "json"));
 
-    Ok(is_json_content_type)
+    is_json_content_type
 }
 
 impl<T> Deref for Json<T> {
@@ -162,26 +158,25 @@ where
     T: Serialize,
 {
     fn into_response(self) -> Response {
-        let bytes = match serde_json::to_vec(&self.0) {
-            Ok(res) => res,
-            Err(err) => {
-                return Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
-                    )
-                    .body(body::boxed(Full::from(err.to_string())))
-                    .unwrap();
-            }
-        };
-
-        let mut res = Response::new(body::boxed(Full::from(bytes)));
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::APPLICATION_JSON.as_ref()),
-        );
-        res
+        match serde_json::to_vec(&self.0) {
+            Ok(bytes) => (
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static(mime::APPLICATION_JSON.as_ref()),
+                )],
+                bytes,
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
+                )],
+                err.to_string(),
+            )
+                .into_response(),
+        }
     }
 }
 
@@ -223,7 +218,7 @@ mod tests {
         let status = res.status();
         dbg!(res.text().await);
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]

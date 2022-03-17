@@ -82,7 +82,7 @@ async fn extension(Extension(state): Extension<State>) {}
 struct State { /* ... */ }
 
 let app = Router::new()
-    .route("/path", post(path))
+    .route("/path/:user_id", post(path))
     .route("/query", post(query))
     .route("/user_agent", post(user_agent))
     .route("/headers", post(headers))
@@ -136,38 +136,10 @@ async fn get_user_things(
 # };
 ```
 
-Take care of the order in which you apply extractors as some extractors
-mutate the request.
-
-For example using [`HeaderMap`] as an extractor will make the headers
-inaccessible for other extractors on the handler. If you need to extract
-individual headers _and_ a [`HeaderMap`] make sure to apply the extractor of
-individual headers first:
-
-```rust,no_run
-use axum::{
-    extract::TypedHeader,
-    routing::get,
-    headers::UserAgent,
-    http::header::HeaderMap,
-    Router,
-};
-
-async fn handler(
-    TypedHeader(user_agent): TypedHeader<UserAgent>,
-    all_headers: HeaderMap,
-) {
-    // ...
-}
-
-let app = Router::new().route("/", get(handler));
-# async {
-# axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-# };
-```
-
-Extractors that consume the request body can also only be applied once as
-well as [`Request`], which consumes the entire request:
+Take care of the order in which you apply extractors as some will mutate the
+request. For example extractors that consume the request body can only be
+applied once. The same is true for [`Request`], which consumes the entire
+request:
 
 ```rust,no_run
 use axum::{
@@ -320,10 +292,6 @@ async fn handler(result: Result<Json<Value>, JsonRejection>) -> impl IntoRespons
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to buffer request body".to_string(),
             )),
-            JsonRejection::HeadersAlreadyExtracted(_) => Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Headers already extracted".to_string(),
-            )),
             // we must provide a catch-all case since `JsonRejection` is marked
             // `#[non_exhaustive]`
             _ => Err((
@@ -377,9 +345,7 @@ where
     type Rejection = (StatusCode, &'static str);
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let user_agent = req.headers().and_then(|headers| headers.get(USER_AGENT));
-
-        if let Some(user_agent) = user_agent {
+        if let Some(user_agent) = req.headers().get(USER_AGENT) {
             Ok(ExtractUserAgent(user_agent.clone()))
         } else {
             Err((StatusCode::BAD_REQUEST, "`User-Agent` header is missing"))
@@ -410,7 +376,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    AddExtensionLayer, Router,
+    Router,
 };
 
 #[derive(Clone)]
@@ -450,7 +416,7 @@ async fn handler(user: AuthenticatedUser) {
 
 let state = State { /* ... */ };
 
-let app = Router::new().route("/", get(handler)).layer(AddExtensionLayer::new(state));
+let app = Router::new().route("/", get(handler)).layer(Extension(state));
 # async {
 # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 # };

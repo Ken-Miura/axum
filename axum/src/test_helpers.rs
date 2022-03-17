@@ -45,15 +45,23 @@ impl TestClient {
             server.await.expect("server error");
         });
 
-        TestClient {
-            client: reqwest::Client::new(),
-            addr,
-        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        TestClient { client, addr }
     }
 
     pub(crate) fn get(&self, url: &str) -> RequestBuilder {
         RequestBuilder {
             builder: self.client.get(format!("http://{}{}", self.addr, url)),
+        }
+    }
+
+    pub(crate) fn head(&self, url: &str) -> RequestBuilder {
+        RequestBuilder {
+            builder: self.client.head(format!("http://{}{}", self.addr, url)),
         }
     }
 
@@ -101,6 +109,7 @@ impl RequestBuilder {
         self.builder = self.builder.json(json);
         self
     }
+
     pub(crate) fn header<K, V>(mut self, key: K, value: V) -> Self
     where
         HeaderName: TryFrom<K>,
@@ -109,6 +118,11 @@ impl RequestBuilder {
         <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
     {
         self.builder = self.builder.header(key, value);
+        self
+    }
+
+    pub(crate) fn multipart(mut self, form: reqwest::multipart::Form) -> Self {
+        self.builder = self.builder.multipart(form);
         self
     }
 }

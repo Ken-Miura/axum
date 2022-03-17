@@ -16,29 +16,31 @@ use axum::{
     },
     response::IntoResponse,
     routing::get,
-    AddExtensionLayer, Router,
+    Router,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::net::SocketAddr;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
 const AXUM_SESSION_COOKIE_NAME: &str = "axum_session";
 
 #[tokio::main]
 async fn main() {
-    // Set the RUST_LOG, if it hasn't been explicitly defined
-    if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "example_sessions=debug")
-    }
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_sessions=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     // `MemoryStore` just used as an example. Don't use this in production.
     let store = MemoryStore::new();
 
     let app = Router::new()
         .route("/", get(handler))
-        .layer(AddExtensionLayer::new(store));
+        .layer(Extension(store));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::debug!("listening on {}", addr);

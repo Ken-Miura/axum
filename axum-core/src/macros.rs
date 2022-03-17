@@ -3,41 +3,6 @@ macro_rules! define_rejection {
         #[status = $status:ident]
         #[body = $body:expr]
         $(#[$m:meta])*
-        pub struct $name:ident;
-    ) => {
-        $(#[$m])*
-        #[derive(Debug)]
-        #[non_exhaustive]
-        pub struct $name;
-
-        #[allow(deprecated)]
-        impl $crate::response::IntoResponse for $name {
-            fn into_response(self) -> $crate::response::Response {
-                let mut res = http::Response::new($crate::body::boxed(http_body::Full::from($body)));
-                *res.status_mut() = http::StatusCode::$status;
-                res
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", $body)
-            }
-        }
-
-        impl std::error::Error for $name {}
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self
-            }
-        }
-    };
-
-    (
-        #[status = $status:ident]
-        #[body = $body:expr]
-        $(#[$m:meta])*
         pub struct $name:ident (Error);
     ) => {
         $(#[$m])*
@@ -55,12 +20,10 @@ macro_rules! define_rejection {
 
         impl crate::response::IntoResponse for $name {
             fn into_response(self) -> $crate::response::Response {
-                let body = http_body::Full::from(format!(concat!($body, ": {}"), self.0));
-                let body = $crate::body::boxed(body);
-                let mut res =
-                    http::Response::new(body);
-                *res.status_mut() = http::StatusCode::$status;
-                res
+                (
+                    http::StatusCode::$status,
+                    format!(concat!($body, ": {}"), self.0)
+                ).into_response()
             }
         }
 
@@ -91,7 +54,7 @@ macro_rules! composite_rejection {
         #[non_exhaustive]
         pub enum $name {
             $(
-                #[allow(missing_docs, deprecated)]
+                #[allow(missing_docs)]
                 $variant($variant)
             ),+
         }
@@ -107,7 +70,6 @@ macro_rules! composite_rejection {
         }
 
         $(
-            #[allow(deprecated)]
             impl From<$variant> for $name {
                 fn from(inner: $variant) -> Self {
                     Self::$variant(inner)

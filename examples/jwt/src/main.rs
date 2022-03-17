@@ -20,6 +20,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{fmt::Display, net::SocketAddr};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Quick instructions
 //
@@ -54,11 +55,12 @@ static KEYS: Lazy<Keys> = Lazy::new(|| {
 
 #[tokio::main]
 async fn main() {
-    // Set the RUST_LOG, if it hasn't been explicitly defined
-    if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "example_jwt=debug")
-    }
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_jwt=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     let app = Router::new()
         .route("/protected", get(protected))
@@ -93,7 +95,8 @@ async fn authorize(Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody>, A
     let claims = Claims {
         sub: "b@b.com".to_owned(),
         company: "ACME".to_owned(),
-        exp: 100000,
+        // Mandatory expiry time as UTC timestamp
+        exp: 2000000000, // May 2033
     };
     // Create the authorization token
     let token = encode(&Header::default(), &claims, &KEYS.encoding)
@@ -154,17 +157,16 @@ impl IntoResponse for AuthError {
     }
 }
 
-#[derive(Debug)]
 struct Keys {
     encoding: EncodingKey,
-    decoding: DecodingKey<'static>,
+    decoding: DecodingKey,
 }
 
 impl Keys {
     fn new(secret: &[u8]) -> Self {
         Self {
             encoding: EncodingKey::from_secret(secret),
-            decoding: DecodingKey::from_secret(secret).into_static(),
+            decoding: DecodingKey::from_secret(secret),
         }
     }
 }

@@ -8,9 +8,9 @@ publish = false
 axum = { path = "../../axum" }
 futures-util = "0.3"
 hyper = { version = "0.14", features = ["full"] }
-rustls-pemfile = "0.2"
+rustls-pemfile = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.23"
 tower = { version = "0.4", features = ["make"] }
 tracing = "0.1"
-tracing-subscriber = { version="0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

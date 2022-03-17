@@ -1,26 +1,25 @@
 //! Rejection response types.
 
-use crate::{
-    body::{boxed, Full},
-    response::{IntoResponse, Response},
-    BoxError, Error,
-};
+use crate::{BoxError, Error};
+use axum_core::response::{IntoResponse, Response};
 
 pub use crate::extract::path::FailedToDeserializePathParams;
 pub use axum_core::extract::rejection::*;
 
 #[cfg(feature = "json")]
 define_rejection! {
-    #[status = BAD_REQUEST]
+    #[status = UNPROCESSABLE_ENTITY]
     #[body = "Failed to parse the request body as JSON"]
     #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
     /// Rejection type for [`Json`](super::Json).
     pub struct InvalidJsonBody(Error);
 }
 
+#[cfg(feature = "json")]
 define_rejection! {
-    #[status = BAD_REQUEST]
+    #[status = UNSUPPORTED_MEDIA_TYPE]
     #[body = "Expected request with `Content-Type: application/json`"]
+    #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
     /// Rejection type for [`Json`](super::Json) used if the `Content-Type`
     /// header is missing.
     pub struct MissingJsonContentType;
@@ -52,17 +51,26 @@ define_rejection! {
 
 define_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
-    #[body = "No paths parameters found for matched route. This is a bug in axum. Please open an issue"]
-    /// Rejection type used if axum's internal representation of path parameters is missing. This
-    /// should never happen and is a bug in axum if it does.
+    #[body = "No paths parameters found for matched route. Are you also extracting `Request<_>`?"]
+    /// Rejection type used if axum's internal representation of path parameters
+    /// is missing. This is commonly caused by extracting `Request<_>`. `Path`
+    /// must be extracted first.
     pub struct MissingPathParams;
 }
 
 define_rejection! {
-    #[status = BAD_REQUEST]
+    #[status = UNSUPPORTED_MEDIA_TYPE]
     #[body = "Form requests must have `Content-Type: x-www-form-urlencoded`"]
     /// Rejection type used if you try and extract the request more than once.
     pub struct InvalidFormContentType;
+}
+
+define_rejection! {
+    #[status = BAD_REQUEST]
+    #[body = "No host found in request"]
+    /// Rejection type used if the [`Host`](super::Host) extractor is unable to
+    /// resolve a host.
+    pub struct FailedToResolveHost;
 }
 
 /// Rejection type for extractors that deserialize query strings if the input
@@ -87,9 +95,7 @@ impl FailedToDeserializeQueryString {
 
 impl IntoResponse for FailedToDeserializeQueryString {
     fn into_response(self) -> Response {
-        let mut res = Response::new(boxed(Full::from(self.to_string())));
-        *res.status_mut() = http::StatusCode::BAD_REQUEST;
-        res
+        (http::StatusCode::UNPROCESSABLE_ENTITY, self.to_string()).into_response()
     }
 }
 
@@ -124,7 +130,6 @@ composite_rejection! {
         InvalidFormContentType,
         FailedToDeserializeQueryString,
         BytesRejection,
-        HeadersAlreadyExtracted,
     }
 }
 
@@ -139,7 +144,6 @@ composite_rejection! {
         InvalidJsonBody,
         MissingJsonContentType,
         BytesRejection,
-        HeadersAlreadyExtracted,
     }
 }
 
@@ -150,7 +154,6 @@ composite_rejection! {
     /// can fail.
     pub enum ExtensionRejection {
         MissingExtension,
-        ExtensionsAlreadyExtracted,
     }
 }
 
@@ -162,23 +165,35 @@ composite_rejection! {
     pub enum PathRejection {
         FailedToDeserializePathParams,
         MissingPathParams,
-        ExtensionsAlreadyExtracted,
     }
 }
 
+composite_rejection! {
+    /// Rejection used for [`Host`](super::Host).
+    ///
+    /// Contains one variant for each way the [`Host`](super::Host) extractor
+    /// can fail.
+    pub enum HostRejection {
+        FailedToResolveHost,
+    }
+}
+
+#[cfg(feature = "matched-path")]
 define_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
     #[body = "No matched path found"]
     /// Rejection if no matched path could be found.
     ///
     /// See [`MatchedPath`](super::MatchedPath) for more details.
+    #[cfg_attr(docsrs, doc(cfg(feature = "matched-path")))]
     pub struct MatchedPathMissing;
 }
 
+#[cfg(feature = "matched-path")]
 composite_rejection! {
     /// Rejection used for [`MatchedPath`](super::MatchedPath).
+    #[cfg_attr(docsrs, doc(cfg(feature = "matched-path")))]
     pub enum MatchedPathRejection {
-        ExtensionsAlreadyExtracted,
         MatchedPathMissing,
     }
 }
@@ -195,8 +210,6 @@ pub enum ContentLengthLimitRejection<T> {
     #[allow(missing_docs)]
     LengthRequired(LengthRequired),
     #[allow(missing_docs)]
-    HeadersAlreadyExtracted(HeadersAlreadyExtracted),
-    #[allow(missing_docs)]
     Inner(T),
 }
 
@@ -208,7 +221,6 @@ where
         match self {
             Self::PayloadTooLarge(inner) => inner.into_response(),
             Self::LengthRequired(inner) => inner.into_response(),
-            Self::HeadersAlreadyExtracted(inner) => inner.into_response(),
             Self::Inner(inner) => inner.into_response(),
         }
     }
@@ -222,7 +234,6 @@ where
         match self {
             Self::PayloadTooLarge(inner) => inner.fmt(f),
             Self::LengthRequired(inner) => inner.fmt(f),
-            Self::HeadersAlreadyExtracted(inner) => inner.fmt(f),
             Self::Inner(inner) => inner.fmt(f),
         }
     }
@@ -236,12 +247,10 @@ where
         match self {
             Self::PayloadTooLarge(inner) => Some(inner),
             Self::LengthRequired(inner) => Some(inner),
-            Self::HeadersAlreadyExtracted(inner) => Some(inner),
             Self::Inner(inner) => Some(inner),
         }
     }
 }
 
 #[cfg(feature = "headers")]
-#[cfg_attr(docsrs, doc(cfg(feature = "headers")))]
-pub use super::typed_header::{TypedHeaderRejection, TypedHeaderRejectionReason};
+pub use crate::typed_header::{TypedHeaderRejection, TypedHeaderRejectionReason};

@@ -1,11 +1,10 @@
 //! Additional extractors.
 
 mod cached;
+#[cfg(feature = "cookie")]
+pub mod cookie;
 
 pub use self::cached::Cached;
 
-pub mod rejection {
-    //! Rejection response types.
-
-    pub use super::cached::CachedRejection;
-}
+#[cfg(feature = "cookie")]
+pub use self::cookie::{CookieJar, SignedCookieJar};

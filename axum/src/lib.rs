@@ -11,7 +11,6 @@
 //! - [Responses](#responses)
 //! - [Error handling](#error-handling)
 //! - [Middleware](#middleware)
-//! - [Routing to services and backpressure](#routing-to-services-and-backpressure)
 //! - [Sharing state with handlers](#sharing-state-with-handlers)
 //! - [Building integrations for axum](#building-integrations-for-axum)
 //! - [Required dependencies](#required-dependencies)
@@ -160,69 +159,8 @@
 //!
 //! # Middleware
 //!
-#![doc = include_str!("docs/middleware.md")]
-//!
-//! # Routing to services and backpressure
-//!
-//! Generally routing to one of multiple services and backpressure doesn't mix
-//! well. Ideally you would want ensure a service is ready to receive a request
-//! before calling it. However, in order to know which service to call, you need
-//! the request...
-//!
-//! One approach is to not consider the router service itself ready until all
-//! destination services are ready. That is the approach used by
-//! [`tower::steer::Steer`].
-//!
-//! Another approach is to always consider all services ready (always return
-//! `Poll::Ready(Ok(()))`) from `Service::poll_ready` and then actually drive
-//! readiness inside the response future returned by `Service::call`. This works
-//! well when your services don't care about backpressure and are always ready
-//! anyway.
-//!
-//! axum expects that all services used in your app wont care about
-//! backpressure and so it uses the latter strategy. However that means you
-//! should avoid routing to a service (or using a middleware) that _does_ care
-//! about backpressure. At the very least you should [load shed] so requests are
-//! dropped quickly and don't keep piling up.
-//!
-//! It also means that if `poll_ready` returns an error then that error will be
-//! returned in the response future from `call` and _not_ from `poll_ready`. In
-//! that case, the underlying service will _not_ be discarded and will continue
-//! to be used for future requests. Services that expect to be discarded if
-//! `poll_ready` fails should _not_ be used with axum.
-//!
-//! One possible approach is to only apply backpressure sensitive middleware
-//! around your entire app. This is possible because axum applications are
-//! themselves services:
-//!
-//! ```rust
-//! use axum::{
-//!     routing::get,
-//!     Router,
-//! };
-//! use tower::ServiceBuilder;
-//! # let some_backpressure_sensitive_middleware =
-//! #     tower::layer::util::Identity::new();
-//!
-//! async fn handler() { /* ... */ }
-//!
-//! let app = Router::new().route("/", get(handler));
-//!
-//! let app = ServiceBuilder::new()
-//!     .layer(some_backpressure_sensitive_middleware)
-//!     .service(app);
-//! # async {
-//! # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-//! # };
-//! ```
-//!
-//! However when applying middleware around your whole application in this way
-//! you have to take care that errors are still being handled with
-//! appropriately.
-//!
-//! Also note that handlers created from async functions don't care about
-//! backpressure and are always ready. So if you're not using any Tower
-//! middleware you don't have to worry about any of this.
+//! There are several different ways to write middleware for axum. See
+//! [`middleware`](crate::middleware) for more details.
 //!
 //! # Sharing state with handlers
 //!
@@ -235,13 +173,11 @@
 //!
 //! ## Using request extensions
 //!
-//! The easiest way to extract state in handlers is using [`AddExtension`]
-//! middleware (applied with [`AddExtensionLayer`]) and the
-//! [`Extension`](crate::extract::Extension) extractor:
+//! The easiest way to extract state in handlers is using [`Extension`](crate::extract::Extension)
+//! as layer and extractor:
 //!
 //! ```rust,no_run
 //! use axum::{
-//!     AddExtensionLayer,
 //!     extract::Extension,
 //!     routing::get,
 //!     Router,
@@ -256,7 +192,7 @@
 //!
 //! let app = Router::new()
 //!     .route("/", get(handler))
-//!     .layer(AddExtensionLayer::new(shared_state));
+//!     .layer(Extension(shared_state));
 //!
 //! async fn handler(
 //!     Extension(state): Extension<Arc<State>>,
@@ -279,7 +215,6 @@
 //!
 //! ```rust,no_run
 //! use axum::{
-//!     AddExtensionLayer,
 //!     Json,
 //!     extract::{Extension, Path},
 //!     routing::{get, post},
@@ -375,12 +310,16 @@
 //! `http1` | Enables hyper's `http1` feature | Yes
 //! `http2` | Enables hyper's `http2` feature | No
 //! `json` | Enables the [`Json`] type and some similar convenience functionality | Yes
+//! `matched-path` | Enables capturing of every request's router path and the [`MatchedPath`] extractor | Yes
 //! `multipart` | Enables parsing `multipart/form-data` requests with [`Multipart`] | No
+//! `original-uri` | Enables capturing of every request's original URI and the [`OriginalUri`] extractor | Yes
 //! `tower-log` | Enables `tower`'s `log` feature | Yes
 //! `ws` | Enables WebSockets support via [`extract::ws`] | No
 //!
 //! [`TypedHeader`]: crate::extract::TypedHeader
+//! [`MatchedPath`]: crate::extract::MatchedPath
 //! [`Multipart`]: crate::extract::Multipart
+//! [`OriginalUri`]: crate::extract::OriginalUri
 //! [`tower`]: https://crates.io/crates/tower
 //! [`tower-http`]: https://crates.io/crates/tower-http
 //! [`tokio`]: http://crates.io/crates/tokio
@@ -392,7 +331,6 @@
 //! [examples]: https://github.com/tokio-rs/axum/tree/main/examples
 //! [`Router::merge`]: crate::routing::Router::merge
 //! [`axum::Server`]: hyper::server::Server
-//! [`OriginalUri`]: crate::extract::OriginalUri
 //! [`Service`]: tower::Service
 //! [`Service::poll_ready`]: tower::Service::poll_ready
 //! [`Service`'s]: tower::Service
@@ -403,8 +341,8 @@
 //! [`HeaderMap`]: http::header::HeaderMap
 //! [`Request`]: http::Request
 //! [customize-extractor-error]: https://github.com/tokio-rs/axum/blob/main/examples/customize-extractor-error/src/main.rs
-//! [axum-debug]: https://docs.rs/axum-debug
-//! [`debug_handler`]: https://docs.rs/axum-debug/latest/axum_debug/attr.debug_handler.html
+//! [axum-macros]: https://docs.rs/axum-macros
+//! [`debug_handler`]: https://docs.rs/axum-macros/latest/axum_macros/attr.debug_handler.html
 //! [`Handler`]: crate::handler::Handler
 //! [`Infallible`]: std::convert::Infallible
 //! [load shed]: tower::load_shed
@@ -448,28 +386,30 @@
 #![deny(unreachable_pub, private_in_public)]
 #![allow(elided_lifetimes_in_paths, clippy::type_complexity)]
 #![forbid(unsafe_code)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 #[macro_use]
 pub(crate) mod macros;
 
-mod add_extension;
+mod extension;
 #[cfg(feature = "json")]
 mod json;
+#[cfg(feature = "headers")]
+mod typed_header;
 mod util;
 
 pub mod body;
 pub mod error_handling;
 pub mod extract;
 pub mod handler;
+pub mod middleware;
 pub mod response;
 pub mod routing;
 
 #[cfg(test)]
 mod test_helpers;
 
-pub use add_extension::{AddExtension, AddExtensionLayer};
 #[doc(no_inline)]
 pub use async_trait::async_trait;
 #[cfg(feature = "headers")]
@@ -481,10 +421,16 @@ pub use http;
 pub use hyper::Server;
 
 #[doc(inline)]
+pub use self::extension::Extension;
+#[doc(inline)]
 #[cfg(feature = "json")]
 pub use self::json::Json;
 #[doc(inline)]
 pub use self::routing::Router;
+
+#[doc(inline)]
+#[cfg(feature = "headers")]
+pub use self::typed_header::TypedHeader;
 
 #[doc(inline)]
 pub use axum_core::{BoxError, Error};

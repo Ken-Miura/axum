@@ -7,22 +7,31 @@
 //! cargo run -p example-prometheus-metrics
 //! ```
 
-use axum::{extract::MatchedPath, http::Request, response::IntoResponse, routing::get, Router};
-use axum_extra::middleware::{self, Next};
+use axum::{
+    extract::MatchedPath,
+    http::Request,
+    middleware::{self, Next},
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use std::{
     future::ready,
     net::SocketAddr,
     time::{Duration, Instant},
 };
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    // Set the RUST_LOG, if it hasn't been explicitly defined
-    if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "example_todos=debug,tower_http=debug")
-    }
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "example_todos=debug,tower_http=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     let recorder_handle = setup_metrics_recorder();
 
@@ -50,18 +59,14 @@ fn setup_metrics_recorder() -> PrometheusHandle {
         0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
     ];
 
-    let recorder = PrometheusBuilder::new()
+    PrometheusBuilder::new()
         .set_buckets_for_metric(
             Matcher::Full("http_requests_duration_seconds".to_string()),
             EXPONENTIAL_SECONDS,
         )
-        .build();
-
-    let recorder_handle = recorder.handle();
-
-    metrics::set_boxed_recorder(Box::new(recorder)).unwrap();
-
-    recorder_handle
+        .unwrap()
+        .install_recorder()
+        .unwrap()
 }
 
 async fn track_metrics<B>(req: Request<B>, next: Next<B>) -> impl IntoResponse {

@@ -80,9 +80,11 @@ use sync_wrapper::SyncWrapper;
 /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 /// # };
 /// ```
+#[cfg(feature = "original-uri")]
 #[derive(Debug, Clone)]
 pub struct OriginalUri(pub Uri);
 
+#[cfg(feature = "original-uri")]
 #[async_trait]
 impl<B> FromRequest<B> for OriginalUri
 where
@@ -100,11 +102,6 @@ where
 }
 
 /// Extractor that extracts the request body as a [`Stream`].
-///
-/// Note if your request body is [`body::Body`] you can extract that directly
-/// and since it already implements [`Stream`] you don't need this type. The
-/// purpose of this type is to extract other types of request bodies as a
-/// [`Stream`].
 ///
 /// # Example
 ///
@@ -174,9 +171,6 @@ fn body_stream_traits() {
 
 /// Extractor that extracts the raw request body.
 ///
-/// Note that [`body::Body`] can be extracted directly. This purpose of this
-/// type is to extract other types of request bodies.
-///
 /// # Example
 ///
 /// ```rust,no_run
@@ -218,9 +212,10 @@ where
 mod tests {
     use crate::{
         body::Body,
+        extract::Extension,
         routing::{get, post},
         test_helpers::*,
-        AddExtensionLayer, Router,
+        Router,
     };
     use http::{Method, Request, StatusCode};
 
@@ -253,11 +248,7 @@ mod tests {
             parts.extensions.get::<Ext>().unwrap();
         }
 
-        let client = TestClient::new(
-            Router::new()
-                .route("/", get(handler))
-                .layer(AddExtensionLayer::new(Ext)),
-        );
+        let client = TestClient::new(Router::new().route("/", get(handler)).layer(Extension(Ext)));
 
         let res = client.get("/").header("x-foo", "123").send().await;
         assert_eq!(res.status(), StatusCode::OK);

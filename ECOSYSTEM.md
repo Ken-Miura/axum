@@ -8,7 +8,8 @@ If your project isn't listed here and you would like it to be, please feel free 
 - [axum-typed-websockets](https://crates.io/crates/axum-typed-websockets): `axum::extract::ws` with type safe messages.
 - [tower-cookies](https://crates.io/crates/tower-cookies): Cookie manager middleware
 - [axum-flash](https://crates.io/crates/axum-flash): One-time notifications (aka flash messages) for axum.
-- [axum-debug](https://crates.io/crates/axum-debug): Debugging crate that provides better error messages for axum.
+- [axum-msgpack](https://crates.io/crates/axum-msgpack): MessagePack Extractors for axum.
+- [axum-sqlx-tx](https://crates.io/crates/axum-sqlx-tx): Request-bound [SQLx](https://github.com/launchbadge/sqlx#readme) transactions with automatic commit/rollback based on response.
 
 ## Project showcase
 
@@ -19,10 +20,19 @@ If your project isn't listed here and you would like it to be, please feel free 
 - [notify.run](https://github.com/notify-run/notify-run-rs): HTTP-to-WebPush relay for sending desktop/mobile notifications to yourself, written in Rust.
 - [turbo.fish](https://turbo.fish/) ([repository](https://github.com/jplatte/turbo.fish)): Find out for yourself 😉
 - [Book Management](https://github.com/lz1998/axum-book-management): CRUD system of book-management with ORM and JWT for educational purposes.
+- [realworld-axum-sqlx](https://github.com/launchbadge/realworld-axum-sqlx): A Rust implementation of the [Realworld] demo app spec using Axum and [SQLx].
+- [Rustapi](https://github.com/ndelvalle/rustapi): RESTful API template using MongoDB
+- [Jotsy](https://github.com/ohsayan/jotsy): Self-hosted notes app powered by Skytable, Axum and Tokio
+- [Svix](https://www.svix.com) ([repository](https://github.com/svix/svix-webhooks)): Enterprise-ready webhook service
+
+[Realworld]: https://github.com/gothinkster/realworld
+[SQLx]: https://github.com/launchbadge/sqlx
 
 ## Tutorials
 
-- [axum-tutorial][axum-tutorial] ([website][axum-tutorial-website]): Axum web framework tutorial for beginners.
+- [axum-tutorial] ([website][axum-tutorial-website]): Axum web framework tutorial for beginners.
+- [demo-rust-axum]: Demo of Rust and axum web framework
 
 [axum-tutorial]: https://github.com/programatik29/axum-tutorial
 [axum-tutorial-website]: https://programatik29.github.io/axum-tutorial/
+[demo-rust-axum]: https://github.com/joelparkerhenderson/demo-rust-axum

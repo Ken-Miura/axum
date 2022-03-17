@@ -3,18 +3,15 @@
 
 mod de;
 
-use super::rejection::ExtensionsAlreadyExtracted;
 use crate::{
-    body::{boxed, Full},
     extract::{rejection::*, FromRequest, RequestParts},
-    response::{IntoResponse, Response},
-    routing::{InvalidUtf8InPathParam, UrlParams},
+    routing::url_params::UrlParams,
 };
 use async_trait::async_trait;
+use axum_core::response::{IntoResponse, Response};
 use http::StatusCode;
 use serde::de::DeserializeOwned;
 use std::{
-    borrow::Cow,
     fmt,
     ops::{Deref, DerefMut},
 };
@@ -131,7 +128,7 @@ use std::{
 /// # Providing detailed rejection output
 ///
 /// If the URI cannot be deserialized into the target type the request will be rejected and an
-/// error response will be returned. See [`customize-path-rejection`] for an exapmle of how to customize that error.
+/// error response will be returned. See [`customize-path-rejection`] for an example of how to customize that error.
 ///
 /// [`serde`]: https://crates.io/crates/serde
 /// [`serde::Deserialize`]: https://docs.rs/serde/1.0.127/serde/trait.Deserialize.html
@@ -164,13 +161,9 @@ where
     type Rejection = PathRejection;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let ext = req
-            .extensions_mut()
-            .ok_or_else::<Self::Rejection, _>(|| ExtensionsAlreadyExtracted::default().into())?;
-
-        let params = match ext.get::<Option<UrlParams>>() {
-            Some(Some(UrlParams(Ok(params)))) => Cow::Borrowed(params),
-            Some(Some(UrlParams(Err(InvalidUtf8InPathParam { key })))) => {
+        let params = match req.extensions_mut().get::<UrlParams>() {
+            Some(UrlParams::Params(params)) => params,
+            Some(UrlParams::InvalidUtf8InPathParam { key }) => {
                 let err = PathDeserializationError {
                     kind: ErrorKind::InvalidUtf8InPathParam {
                         key: key.as_str().to_owned(),
@@ -179,7 +172,6 @@ where
                 let err = FailedToDeserializePathParams(err);
                 return Err(err.into());
             }
-            Some(None) => Cow::Owned(Vec::new()),
             None => {
                 return Err(MissingPathParams.into());
             }
@@ -387,9 +379,7 @@ impl IntoResponse for FailedToDeserializePathParams {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.0.kind.to_string())
             }
         };
-        let mut res = Response::new(boxed(Full::from(body)));
-        *res.status_mut() = status;
-        res
+        (status, body).into_response()
     }
 }
 
@@ -519,6 +509,9 @@ mod tests {
 
         let res = client.get("/foo").send().await;
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(res.text().await, "Extensions taken by other extractor");
+        assert_eq!(
+            res.text().await,
+            "No paths parameters found for matched route. Are you also extracting `Request<_>`?"
+        );
     }
 }

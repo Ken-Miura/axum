@@ -321,9 +321,9 @@ async fn with_trailing_slash() {
 
     let client = TestClient::new(app);
 
-    // `TestClient` automatically follows redirects
     let res = client.get("/foo/").send().await;
-    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(res.headers().get("location").unwrap(), "/foo");
 }
 
 #[tokio::test]
@@ -332,9 +332,9 @@ async fn without_trailing_slash() {
 
     let client = TestClient::new(app);
 
-    // `TestClient` automatically follows redirects
     let res = client.get("/foo").send().await;
-    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(res.headers().get("location").unwrap(), "/foo/");
 }
 
 #[tokio::test]
@@ -363,7 +363,8 @@ async fn with_trailing_slash_post() {
 
     // `TestClient` automatically follows redirects
     let res = client.post("/foo/").send().await;
-    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(res.headers().get("location").unwrap(), "/foo");
 }
 
 // for https://github.com/tokio-rs/axum/issues/681
@@ -373,9 +374,9 @@ async fn without_trailing_slash_post() {
 
     let client = TestClient::new(app);
 
-    // `TestClient` automatically follows redirects
     let res = client.post("/foo").send().await;
-    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(res.headers().get("location").unwrap(), "/foo/");
 }
 
 // for https://github.com/tokio-rs/axum/issues/420
@@ -440,7 +441,7 @@ async fn static_and_dynamic_paths() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "Invalid route: empty path")]
+#[should_panic(expected = "Paths must start with a `/`. Use \"/\" for root routes")]
 async fn empty_route() {
     let app = Router::new().route("", get(|| async {}));
     TestClient::new(app);
@@ -524,7 +525,10 @@ async fn route_layer() {
 
 #[tokio::test]
 #[should_panic(
-    expected = "Invalid route: insertion failed due to conflict with previously registered route: /*axum_nest. Note that `nest(\"/\", _)` conflicts with all routes. Use `Router::fallback` instead"
+    expected = "Invalid route: insertion failed due to conflict with previously registered \
+    route: /*__private__axum_nest_tail_param. \
+    Note that `nest(\"/\", _)` conflicts with all routes. \
+    Use `Router::fallback` instead"
 )]
 async fn good_error_message_if_using_nest_root() {
     let app = Router::new()
@@ -535,7 +539,10 @@ async fn good_error_message_if_using_nest_root() {
 
 #[tokio::test]
 #[should_panic(
-    expected = "Invalid route: insertion failed due to conflict with previously registered route: /*axum_nest. Note that `nest(\"/\", _)` conflicts with all routes. Use `Router::fallback` instead"
+    expected = "Invalid route: insertion failed due to conflict with previously registered \
+    route: /*__private__axum_nest_tail_param. \
+    Note that `nest(\"/\", _)` conflicts with all routes. \
+    Use `Router::fallback` instead"
 )]
 async fn good_error_message_if_using_nest_root_when_merging() {
     let one = Router::new().nest("/", get(|| async {}));
@@ -616,4 +623,71 @@ async fn merging_routers_with_same_paths_but_different_methods() {
     let res = client.post("/").send().await;
     let body = res.text().await;
     assert_eq!(body, "POST");
+}
+
+#[tokio::test]
+async fn head_content_length_through_hyper_server() {
+    let app = Router::new()
+        .route("/", get(|| async { "foo" }))
+        .route("/json", get(|| async { Json(json!({ "foo": 1 })) }));
+
+    let client = TestClient::new(app);
+
+    let res = client.head("/").send().await;
+    assert_eq!(res.headers()["content-length"], "3");
+    assert!(res.text().await.is_empty());
+
+    let res = client.head("/json").send().await;
+    assert_eq!(res.headers()["content-length"], "9");
+    assert!(res.text().await.is_empty());
+}
+
+#[tokio::test]
+async fn head_content_length_through_hyper_server_that_hits_fallback() {
+    let app = Router::new().fallback((|| async { "foo" }).into_service());
+
+    let client = TestClient::new(app);
+
+    let res = client.head("/").send().await;
+    assert_eq!(res.headers()["content-length"], "3");
+}
+
+#[tokio::test]
+async fn head_with_middleware_applied() {
+    use tower_http::compression::{predicate::SizeAbove, CompressionLayer};
+
+    let app = Router::new()
+        .route("/", get(|| async { "Hello, World!" }))
+        .layer(CompressionLayer::new().compress_when(SizeAbove::new(0)));
+
+    let client = TestClient::new(app);
+
+    // send GET request
+    let res = client
+        .get("/")
+        .header("accept-encoding", "gzip")
+        .send()
+        .await;
+    assert_eq!(res.headers()["transfer-encoding"], "chunked");
+    // cannot have `transfer-encoding: chunked` and `content-length`
+    assert!(!res.headers().contains_key("content-length"));
+
+    // send HEAD request
+    let res = client
+        .head("/")
+        .header("accept-encoding", "gzip")
+        .send()
+        .await;
+    // no response body so no `transfer-encoding`
+    assert!(!res.headers().contains_key("transfer-encoding"));
+    // no content-length since we cannot know it since the response
+    // is compressed
+    assert!(!res.headers().contains_key("content-length"));
+}
+
+#[tokio::test]
+#[should_panic(expected = "Paths must start with a `/`")]
+async fn routes_must_start_with_slash() {
+    let app = Router::new().route(":foo", get(|| async {}));
+    TestClient::new(app);
 }

@@ -6,7 +6,6 @@
 
 use askama::Template;
 use axum::{
-    body::{self, Full},
     extract,
     http::StatusCode,
     response::{Html, IntoResponse, Response},
@@ -14,14 +13,16 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    // Set the RUST_LOG, if it hasn't been explicitly defined
-    if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "example_templates=debug")
-    }
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_templates=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     // build our application with some routes
     let app = Router::new().route("/greet/:name", get(greet));
@@ -55,13 +56,11 @@ where
     fn into_response(self) -> Response {
         match self.0.render() {
             Ok(html) => Html(html).into_response(),
-            Err(err) => Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(body::boxed(Full::from(format!(
-                    "Failed to render template. Error: {}",
-                    err
-                ))))
-                .unwrap(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to render template. Error: {}", err),
+            )
+                .into_response(),
         }
     }
 }

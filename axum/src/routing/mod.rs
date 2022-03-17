@@ -1,20 +1,16 @@
 //! Routing between [`Service`]s and handlers.
 
-use self::{future::RouterFuture, not_found::NotFound};
+use self::{future::RouteFuture, not_found::NotFound};
 use crate::{
     body::{boxed, Body, Bytes, HttpBody},
-    extract::{
-        connect_info::{Connected, IntoMakeServiceWithConnectInfo},
-        MatchedPath, OriginalUri,
-    },
-    response::IntoResponse,
-    response::Redirect,
-    response::Response,
+    extract::connect_info::{Connected, IntoMakeServiceWithConnectInfo},
+    response::{IntoResponse, Redirect, Response},
     routing::strip_prefix::StripPrefix,
-    util::{try_downcast, ByteStr, PercentDecodedByteStr},
+    util::try_downcast,
     BoxError,
 };
 use http::{Request, Uri};
+use matchit::MatchError;
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -36,6 +32,7 @@ mod method_routing;
 mod not_found;
 mod route;
 mod strip_prefix;
+pub(crate) mod url_params;
 
 #[cfg(test)]
 mod tests;
@@ -65,7 +62,6 @@ impl RouteId {
 }
 
 /// The router type for composing handlers and services.
-#[derive(Debug)]
 pub struct Router<B = Body> {
     routes: HashMap<RouteId, Endpoint<B>>,
     node: Node,
@@ -86,19 +82,30 @@ impl<B> Clone for Router<B> {
 
 impl<B> Default for Router<B>
 where
-    B: Send + 'static,
+    B: HttpBody + Send + 'static,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub(crate) const NEST_TAIL_PARAM: &str = "axum_nest";
-const NEST_TAIL_PARAM_CAPTURE: &str = "/*axum_nest";
+impl<B> fmt::Debug for Router<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Router")
+            .field("routes", &self.routes)
+            .field("node", &self.node)
+            .field("fallback", &self.fallback)
+            .field("nested_at_root", &self.nested_at_root)
+            .finish()
+    }
+}
+
+pub(crate) const NEST_TAIL_PARAM: &str = "__private__axum_nest_tail_param";
+const NEST_TAIL_PARAM_CAPTURE: &str = "/*__private__axum_nest_tail_param";
 
 impl<B> Router<B>
 where
-    B: Send + 'static,
+    B: HttpBody + Send + 'static,
 {
     /// Create a new `Router`.
     ///
@@ -120,7 +127,9 @@ where
         T::Future: Send + 'static,
     {
         if path.is_empty() {
-            panic!("Invalid route: empty path");
+            panic!("Paths must start with a `/`. Use \"/\" for root routes");
+        } else if !path.starts_with('/') {
+            panic!("Paths must start with a `/`");
         }
 
         let service = match try_downcast::<Router<B>, _>(service) {
@@ -208,6 +217,8 @@ where
                         path.into()
                     } else if path == "/" {
                         (&*nested_path).into()
+                    } else if let Some(path) = path.strip_suffix('/') {
+                        format!("{}{}", path, nested_path).into()
                     } else {
                         format!("{}{}", path, nested_path).into()
                     };
@@ -226,8 +237,8 @@ where
             }
             // otherwise we add a wildcard route to the service
             Err(svc) => {
-                let path = if path == "/" {
-                    format!("/*{}", NEST_TAIL_PARAM)
+                let path = if path.ends_with('/') {
+                    format!("{}*{}", path, NEST_TAIL_PARAM)
                 } else {
                     format!("{}/*{}", path, NEST_TAIL_PARAM)
                 };
@@ -240,13 +251,16 @@ where
     }
 
     #[doc = include_str!("../docs/routing/merge.md")]
-    pub fn merge(mut self, other: Router<B>) -> Self {
+    pub fn merge<R>(mut self, other: R) -> Self
+    where
+        R: Into<Router<B>>,
+    {
         let Router {
             routes,
             node,
             fallback,
             nested_at_root,
-        } = other;
+        } = other.into();
 
         for (id, route) in routes {
             let path = node
@@ -401,11 +415,17 @@ where
     }
 
     #[inline]
-    fn call_route(&self, match_: matchit::Match<&RouteId>, mut req: Request<B>) -> RouterFuture<B> {
+    fn call_route(
+        &self,
+        match_: matchit::Match<&RouteId>,
+        mut req: Request<B>,
+    ) -> RouteFuture<B, Infallible> {
         let id = *match_.value;
-        req.extensions_mut().insert(id);
 
+        #[cfg(feature = "matched-path")]
         if let Some(matched_path) = self.node.route_id_to_path.get(&id) {
+            use crate::extract::MatchedPath;
+
             let matched_path = if let Some(previous) = req.extensions_mut().get::<MatchedPath>() {
                 // a previous `MatchedPath` might exist if we're inside a nested Router
                 let previous = if let Some(previous) =
@@ -427,14 +447,7 @@ where
             panic!("should always have a matched path for a route id");
         }
 
-        let params = match_
-            .params
-            .iter()
-            .filter(|(key, _)| !key.starts_with(NEST_TAIL_PARAM))
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            .collect::<Vec<_>>();
-
-        insert_url_params(&mut req, params);
+        url_params::insert_url_params(req.extensions_mut(), match_.params);
 
         let mut route = self
             .routes
@@ -442,11 +455,10 @@ where
             .expect("no route for id. This is a bug in axum. Please file an issue")
             .clone();
 
-        let future = match &mut route {
+        match &mut route {
             Endpoint::MethodRouter(inner) => inner.call(req),
             Endpoint::Route(inner) => inner.call(req),
-        };
-        RouterFuture::from_future(future)
+        }
     }
 
     fn panic_on_matchit_error(&self, err: matchit::InsertError) {
@@ -463,11 +475,11 @@ where
 
 impl<B> Service<Request<B>> for Router<B>
 where
-    B: Send + 'static,
+    B: HttpBody + Send + 'static,
 {
     type Response = Response;
     type Error = Infallible;
-    type Future = RouterFuture<B>;
+    type Future = RouteFuture<B, Infallible>;
 
     #[inline]
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -476,35 +488,31 @@ where
 
     #[inline]
     fn call(&mut self, mut req: Request<B>) -> Self::Future {
-        if req.extensions().get::<OriginalUri>().is_none() {
-            let original_uri = OriginalUri(req.uri().clone());
-            req.extensions_mut().insert(original_uri);
+        #[cfg(feature = "original-uri")]
+        {
+            use crate::extract::OriginalUri;
+
+            if req.extensions().get::<OriginalUri>().is_none() {
+                let original_uri = OriginalUri(req.uri().clone());
+                req.extensions_mut().insert(original_uri);
+            }
         }
 
         let path = req.uri().path().to_owned();
 
         match self.node.at(&path) {
             Ok(match_) => self.call_route(match_, req),
-            Err(err) => {
-                if err.tsr() {
-                    let redirect_to = if let Some(without_tsr) = path.strip_suffix('/') {
-                        with_path(req.uri(), without_tsr)
-                    } else {
-                        with_path(req.uri(), &format!("{}/", path))
-                    };
-                    let res = Redirect::permanent(redirect_to);
-                    RouterFuture::from_response(res.into_response())
-                } else {
-                    match &self.fallback {
-                        Fallback::Default(inner) => {
-                            RouterFuture::from_future(inner.clone().call(req))
-                        }
-                        Fallback::Custom(inner) => {
-                            RouterFuture::from_future(inner.clone().call(req))
-                        }
-                    }
-                }
-            }
+            Err(MatchError::MissingTrailingSlash) => RouteFuture::from_response(
+                Redirect::permanent(with_path(req.uri(), &format!("{}/", path))).into_response(),
+            ),
+            Err(MatchError::ExtraTrailingSlash) => RouteFuture::from_response(
+                Redirect::permanent(with_path(req.uri(), path.strip_suffix('/').unwrap()))
+                    .into_response(),
+            ),
+            Err(MatchError::NotFound) => match &self.fallback {
+                Fallback::Default(inner) => inner.clone().call(req),
+                Fallback::Custom(inner) => inner.clone().call(req),
+            },
         }
     }
 }
@@ -538,53 +546,10 @@ fn with_path(uri: &Uri, new_path: &str) -> Uri {
     Uri::from_parts(parts).unwrap()
 }
 
-// we store the potential error here such that users can handle invalid path
-// params using `Result<Path<T>, _>`. That wouldn't be possible if we
-// returned an error immediately when decoding the param
-pub(crate) struct UrlParams(
-    pub(crate) Result<Vec<(ByteStr, PercentDecodedByteStr)>, InvalidUtf8InPathParam>,
-);
-
-fn insert_url_params<B>(req: &mut Request<B>, params: Vec<(String, String)>) {
-    let params = params
-        .into_iter()
-        .map(|(k, v)| {
-            if let Some(decoded) = PercentDecodedByteStr::new(v) {
-                Ok((ByteStr::new(k), decoded))
-            } else {
-                Err(InvalidUtf8InPathParam {
-                    key: ByteStr::new(k),
-                })
-            }
-        })
-        .collect::<Result<Vec<_>, _>>();
-
-    if let Some(current) = req.extensions_mut().get_mut::<Option<UrlParams>>() {
-        match params {
-            Ok(params) => {
-                let mut current = current.take().unwrap();
-                if let Ok(current) = &mut current.0 {
-                    current.extend(params);
-                }
-                req.extensions_mut().insert(Some(current));
-            }
-            Err(err) => {
-                req.extensions_mut().insert(Some(UrlParams(Err(err))));
-            }
-        }
-    } else {
-        req.extensions_mut().insert(Some(UrlParams(params)));
-    }
-}
-
-pub(crate) struct InvalidUtf8InPathParam {
-    pub(crate) key: ByteStr,
-}
-
-/// Wrapper around `matchit::Node` that supports merging two `Node`s.
+/// Wrapper around `matchit::Router` that supports merging two `Router`s.
 #[derive(Clone, Default)]
 struct Node {
-    inner: matchit::Node<RouteId>,
+    inner: matchit::Router<RouteId>,
     route_id_to_path: HashMap<RouteId, Arc<str>>,
     path_to_route_id: HashMap<Arc<str>, RouteId>,
 }
@@ -609,7 +574,7 @@ impl Node {
     fn at<'n, 'p>(
         &'n self,
         path: &'p str,
-    ) -> Result<matchit::Match<'n, 'p, &'n RouteId>, matchit::MatchError> {
+    ) -> Result<matchit::Match<'n, 'p, &'n RouteId>, MatchError> {
         self.inner.at(path)
     }
 }

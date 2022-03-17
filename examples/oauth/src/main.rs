@@ -18,7 +18,7 @@ use axum::{
     http::{header::SET_COOKIE, HeaderMap},
     response::{IntoResponse, Redirect, Response},
     routing::get,
-    AddExtensionLayer, Router,
+    Router,
 };
 use http::header;
 use oauth2::{
@@ -27,16 +27,18 @@ use oauth2::{
 };
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 static COOKIE_NAME: &str = "SESSION";
 
 #[tokio::main]
 async fn main() {
-    // Set the RUST_LOG, if it hasn't been explicitly defined
-    if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "example_oauth=debug")
-    }
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_oauth=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     // `MemoryStore` is just used as an example. Don't use this in production.
     let store = MemoryStore::new();
@@ -49,8 +51,8 @@ async fn main() {
         .route("/auth/authorized", get(login_authorized))
         .route("/protected", get(protected))
         .route("/logout", get(logout))
-        .layer(AddExtensionLayer::new(store))
-        .layer(AddExtensionLayer::new(oauth_client));
+        .layer(Extension(store))
+        .layer(Extension(oauth_client));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::debug!("listening on {}", addr);

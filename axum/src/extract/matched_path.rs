@@ -52,6 +52,7 @@ use std::sync::Arc;
 /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 /// # };
 /// ```
+#[cfg_attr(docsrs, doc(cfg(feature = "matched-path")))]
 #[derive(Clone, Debug)]
 pub struct MatchedPath(pub(crate) Arc<str>);
 
@@ -70,11 +71,8 @@ where
     type Rejection = MatchedPathRejection;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let extensions = req.extensions().ok_or_else(|| {
-            MatchedPathRejection::ExtensionsAlreadyExtracted(ExtensionsAlreadyExtracted::default())
-        })?;
-
-        let matched_path = extensions
+        let matched_path = req
+            .extensions()
             .get::<Self>()
             .ok_or(MatchedPathRejection::MatchedPathMissing(MatchedPathMissing))?
             .clone();

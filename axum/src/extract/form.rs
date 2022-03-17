@@ -40,6 +40,7 @@ use std::ops::Deref;
 /// ```
 ///
 /// Note that `Content-Type: multipart/form-data` requests are not supported.
+#[cfg_attr(docsrs, doc(cfg(feature = "form")))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Form<T>(pub T);
 
@@ -60,7 +61,7 @@ where
                 .map_err(FailedToDeserializeQueryString::new::<T, _>)?;
             Ok(Form(value))
         } else {
-            if !has_content_type(req, &mime::APPLICATION_WWW_FORM_URLENCODED)? {
+            if !has_content_type(req, &mime::APPLICATION_WWW_FORM_URLENCODED) {
                 return Err(InvalidFormContentType.into());
             }
 

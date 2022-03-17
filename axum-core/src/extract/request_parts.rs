@@ -10,7 +10,7 @@ impl<B> FromRequest<B> for Request<B>
 where
     B: Send,
 {
-    type Rejection = RequestAlreadyExtracted;
+    type Rejection = BodyAlreadyExtracted;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
         let req = std::mem::replace(
@@ -19,24 +19,13 @@ where
                 method: req.method.clone(),
                 version: req.version,
                 uri: req.uri.clone(),
-                headers: None,
-                extensions: None,
+                headers: HeaderMap::new(),
+                extensions: Extensions::default(),
                 body: None,
             },
         );
 
-        let err = match req.try_into_request() {
-            Ok(req) => return Ok(req),
-            Err(err) => err,
-        };
-
-        match err.downcast::<RequestAlreadyExtracted>() {
-            Ok(err) => return Err(err),
-            Err(err) => unreachable!(
-                "Unexpected error type from `try_into_request`: `{:?}`. This is a bug in axum, please file an issue",
-                err,
-            ),
-        }
+        req.try_into_request()
     }
 }
 
@@ -76,27 +65,20 @@ where
     }
 }
 
+/// Clone the headers from the request.
+///
+/// Prefer using [`TypedHeader`] to extract only the headers you need.
+///
+/// [`TypedHeader`]: https://docs.rs/axum/latest/axum/extract/struct.TypedHeader.html
 #[async_trait]
 impl<B> FromRequest<B> for HeaderMap
 where
     B: Send,
 {
-    type Rejection = HeadersAlreadyExtracted;
+    type Rejection = Infallible;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        req.take_headers().ok_or(HeadersAlreadyExtracted)
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for Extensions
-where
-    B: Send,
-{
-    type Rejection = ExtensionsAlreadyExtracted;
-
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        req.take_extensions().ok_or(ExtensionsAlreadyExtracted)
+        Ok(req.headers().clone())
     }
 }
 
@@ -148,14 +130,14 @@ impl<B> FromRequest<B> for http::request::Parts
 where
     B: Send,
 {
-    type Rejection = RequestPartsAlreadyExtracted;
+    type Rejection = Infallible;
 
     async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
         let method = unwrap_infallible(Method::from_request(req).await);
         let uri = unwrap_infallible(Uri::from_request(req).await);
         let version = unwrap_infallible(Version::from_request(req).await);
-        let headers = HeaderMap::from_request(req).await?;
-        let extensions = Extensions::from_request(req).await?;
+        let headers = unwrap_infallible(HeaderMap::from_request(req).await);
+        let extensions = std::mem::take(req.extensions_mut());
 
         let mut temp_request = Request::new(());
         *temp_request.method_mut() = method;
