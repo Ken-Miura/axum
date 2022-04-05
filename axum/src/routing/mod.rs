@@ -3,13 +3,13 @@
 use self::{future::RouteFuture, not_found::NotFound};
 use crate::{
     body::{boxed, Body, Bytes, HttpBody},
-    extract::connect_info::{Connected, IntoMakeServiceWithConnectInfo},
+    extract::connect_info::IntoMakeServiceWithConnectInfo,
     response::{IntoResponse, Redirect, Response},
     routing::strip_prefix::StripPrefix,
     util::try_downcast,
     BoxError,
 };
-use http::{Request, Uri};
+use http::Request;
 use matchit::MatchError;
 use std::{
     borrow::Cow,
@@ -405,12 +405,7 @@ where
     }
 
     #[doc = include_str!("../docs/routing/into_make_service_with_connect_info.md")]
-    pub fn into_make_service_with_connect_info<C, Target>(
-        self,
-    ) -> IntoMakeServiceWithConnectInfo<Self, C>
-    where
-        C: Connected<Target>,
-    {
+    pub fn into_make_service_with_connect_info<C>(self) -> IntoMakeServiceWithConnectInfo<Self, C> {
         IntoMakeServiceWithConnectInfo::new(self)
     }
 
@@ -503,10 +498,10 @@ where
         match self.node.at(&path) {
             Ok(match_) => self.call_route(match_, req),
             Err(MatchError::MissingTrailingSlash) => RouteFuture::from_response(
-                Redirect::permanent(with_path(req.uri(), &format!("{}/", path))).into_response(),
+                Redirect::permanent(&format!("{}/", req.uri().to_string())).into_response(),
             ),
             Err(MatchError::ExtraTrailingSlash) => RouteFuture::from_response(
-                Redirect::permanent(with_path(req.uri(), path.strip_suffix('/').unwrap()))
+                Redirect::permanent(&req.uri().to_string().strip_suffix('/').unwrap())
                     .into_response(),
             ),
             Err(MatchError::NotFound) => match &self.fallback {
@@ -515,35 +510,6 @@ where
             },
         }
     }
-}
-
-fn with_path(uri: &Uri, new_path: &str) -> Uri {
-    let path_and_query = if let Some(path_and_query) = uri.path_and_query() {
-        let new_path = if new_path.starts_with('/') {
-            Cow::Borrowed(new_path)
-        } else {
-            Cow::Owned(format!("/{}", new_path))
-        };
-
-        if let Some(query) = path_and_query.query() {
-            Some(
-                format!("{}?{}", new_path, query)
-                    .parse::<http::uri::PathAndQuery>()
-                    .unwrap(),
-            )
-        } else {
-            Some(new_path.parse().unwrap())
-        }
-    } else {
-        None
-    };
-
-    let mut parts = http::uri::Parts::default();
-    parts.scheme = uri.scheme().cloned();
-    parts.authority = uri.authority().cloned();
-    parts.path_and_query = path_and_query;
-
-    Uri::from_parts(parts).unwrap()
 }
 
 /// Wrapper around `matchit::Router` that supports merging two `Router`s.
