@@ -1,8 +1,27 @@
 Types and traits for extracting data from requests.
 
+# Table of contents
+
+- [Intro](#intro)
+- [Common extractors](#common-extractors)
+- [Applying multiple extractors](#applying-multiple-extractors)
+- [The order of extractors](#the-order-of-extractors)
+- [Optional extractors](#optional-extractors)
+- [Customizing extractor responses](#customizing-extractor-responses)
+- [Accessing inner errors](#accessing-inner-errors)
+- [Defining custom extractors](#defining-custom-extractors)
+- [Accessing other extractors in `FromRequest` or `FromRequestParts` implementations](#accessing-other-extractors-in-fromrequest-or-fromrequestparts-implementations)
+- [Request body limits](#request-body-limits)
+- [Request body extractors](#request-body-extractors)
+- [Running extractors from middleware](#running-extractors-from-middleware)
+- [Wrapping extractors](#wrapping-extractors)
+
+# Intro
+
 A handler function is an async function that takes any number of
 "extractors" as arguments. An extractor is a type that implements
-[`FromRequest`](crate::extract::FromRequest).
+[`FromRequest`](crate::extract::FromRequest)
+or [`FromRequestParts`](crate::extract::FromRequestParts).
 
 For example, [`Json`] is an extractor that consumes the request body and
 deserializes it as JSON into some target type:
@@ -136,31 +155,74 @@ async fn get_user_things(
 # };
 ```
 
-Take care of the order in which you apply extractors as some will mutate the
-request. For example extractors that consume the request body can only be
-applied once. The same is true for [`Request`], which consumes the entire
-request:
-
-```rust,no_run
-use axum::{
-    routing::get,
-    http::Request,
-    body::Body,
-    Router,
-};
-
-async fn handler(request: Request<Body>) {
-    // ...
-}
-
-let app = Router::new().route("/", get(handler));
-# async {
-# axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-# };
-```
+# The order of extractors
 
 Extractors always run in the order of the function parameters that is from
 left to right.
+
+The request body is an asynchronous stream that can only be consumed once.
+Therefore you can only have one extractor that consumes the request body. axum
+enforces by that requiring such extractors to be the _last_ argument your
+handler takes.
+
+For example
+
+```rust
+use axum::http::{Method, HeaderMap};
+
+async fn handler(
+    // `Method` and `HeaderMap` don't consume the request body so they can
+    // put anywhere in the argument list
+    method: Method,
+    headers: HeaderMap,
+    // `String` consumes the request body and thus must be the last extractor
+    body: String,
+) {
+    // ...
+}
+#
+# let _: axum::routing::MethodRouter = axum::routing::get(handler);
+```
+
+We get a compile error if `String` isn't the last extractor:
+
+```rust,compile_fail
+use axum::http::Method;
+
+async fn handler(
+    // this doesn't work since `String` must be the last argument
+    body: String,
+    method: Method,
+) {
+    // ...
+}
+#
+# let _: axum::routing::MethodRouter = axum::routing::get(handler);
+```
+
+This also means you cannot consume the request body twice:
+
+```rust,compile_fail
+use axum::Json;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Payload {}
+
+async fn handler(
+    // `String` and `Json` both consume the request body
+    // so they cannot both be used
+    string_body: String,
+    json_body: Json<Payload>,
+) {
+    // ...
+}
+#
+# let _: axum::routing::MethodRouter = axum::routing::get(handler);
+```
+
+axum enforces this by requiring the last extractor implements [`FromRequest`]
+and all others implement [`FromRequestParts`].
 
 # Optional extractors
 
@@ -264,7 +326,9 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-async fn handler(result: Result<Json<Value>, JsonRejection>) -> impl IntoResponse {
+async fn handler(
+    result: Result<Json<Value>, JsonRejection>,
+) -> Result<Json<Value>, (StatusCode, String)> {
     match result {
         // if the client sent valid JSON then we're good
         Ok(Json(payload)) => Ok(Json(json!({ "payload": payload }))),
@@ -337,28 +401,38 @@ happen without major breaking versions.
 
 # Defining custom extractors
 
-You can also define your own extractors by implementing [`FromRequest`]:
+You can also define your own extractors by implementing either
+[`FromRequestParts`] or [`FromRequest`].
+
+## Implementing `FromRequestParts`
+
+Implement `FromRequestParts` if your extractor doesn't need access to the
+request body:
 
 ```rust,no_run
 use axum::{
     async_trait,
-    extract::{FromRequest, RequestParts},
+    extract::FromRequestParts,
     routing::get,
     Router,
+    http::{
+        StatusCode,
+        header::{HeaderValue, USER_AGENT},
+        request::Parts,
+    },
 };
-use http::{StatusCode, header::{HeaderValue, USER_AGENT}};
 
 struct ExtractUserAgent(HeaderValue);
 
 #[async_trait]
-impl<B> FromRequest<B> for ExtractUserAgent
+impl<S> FromRequestParts<S> for ExtractUserAgent
 where
-    B: Send,
+    S: Send + Sync,
 {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        if let Some(user_agent) = req.headers().get(USER_AGENT) {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(user_agent) = parts.headers.get(USER_AGENT) {
             Ok(ExtractUserAgent(user_agent.clone()))
         } else {
             Err((StatusCode::BAD_REQUEST, "`User-Agent` header is missing"))
@@ -376,7 +450,120 @@ let app = Router::new().route("/foo", get(handler));
 # };
 ```
 
-# Accessing other extractors in [`FromRequest`] implementations
+## Implementing `FromRequest`
+
+If your extractor needs to consume the request body you must implement [`FromRequest`]
+
+```rust,no_run
+use axum::{
+    async_trait,
+    extract::FromRequest,
+    response::{Response, IntoResponse},
+    body::Bytes,
+    routing::get,
+    Router,
+    http::{
+        StatusCode,
+        header::{HeaderValue, USER_AGENT},
+        Request,
+    },
+};
+
+struct ValidatedBody(Bytes);
+
+#[async_trait]
+impl<S, B> FromRequest<S, B> for ValidatedBody
+where
+    Bytes: FromRequest<S, B>,
+    B: Send + 'static,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request<B>, state: &S) -> Result<Self, Self::Rejection> {
+        let body = Bytes::from_request(req, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+
+        // do validation...
+
+        Ok(Self(body))
+    }
+}
+
+async fn handler(ValidatedBody(body): ValidatedBody) {
+    // ...
+}
+
+let app = Router::new().route("/foo", get(handler));
+# async {
+# axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
+# };
+```
+
+## Cannot implement both `FromRequest` and `FromRequestParts`
+
+Note that you will make your extractor unusable by implementing both
+`FromRequest` and `FromRequestParts` directly for the same type, unless it is
+wrapping another extractor:
+
+```rust,compile_fail
+use axum::{
+    Router,
+    routing::get,
+    extract::{FromRequest, FromRequestParts},
+    http::{Request, request::Parts},
+    async_trait,
+};
+use std::convert::Infallible;
+
+// Some extractor that doesn't wrap another extractor
+struct MyExtractor;
+
+// `MyExtractor` implements both `FromRequest`
+#[async_trait]
+impl<S, B> FromRequest<S, B> for MyExtractor
+where
+    S: Send + Sync,
+    B: Send + 'static,
+{
+    type Rejection = Infallible;
+
+    async fn from_request(req: Request<B>, state: &S) -> Result<Self, Self::Rejection> {
+        // ...
+        # todo!()
+    }
+}
+
+// and `FromRequestParts`
+#[async_trait]
+impl<S> FromRequestParts<S> for MyExtractor
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        // ...
+        # todo!()
+    }
+}
+
+let app = Router::new().route(
+    "/",
+    // This fails when we go to actually use `MyExtractor` in a handler function.
+    // This is due to a limit in Rust's type system.
+    //
+    // The workaround is to implement either `FromRequest` or `FromRequestParts`
+    // but not both, if your extractor doesn't wrap another extractor.
+    //
+    // See "Wrapping extractors" for how to wrap other extractors.
+    get(|_: MyExtractor| async {}),
+);
+# let _: Router = app;
+```
+
+# Accessing other extractors in `FromRequest` or `FromRequestParts` implementations
 
 When defining custom extractors you often need to access another extractors
 in your implementation.
@@ -384,9 +571,9 @@ in your implementation.
 ```rust
 use axum::{
     async_trait,
-    extract::{Extension, FromRequest, RequestParts, TypedHeader},
+    extract::{Extension, FromRequestParts, TypedHeader},
     headers::{authorization::Bearer, Authorization},
-    http::StatusCode,
+    http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -402,24 +589,26 @@ struct AuthenticatedUser {
 }
 
 #[async_trait]
-impl<B> FromRequest<B> for AuthenticatedUser
+impl<S> FromRequestParts<S> for AuthenticatedUser
 where
-    B: Send,
+    S: Send + Sync,
 {
     type Rejection = Response;
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let TypedHeader(Authorization(token)) = 
-            TypedHeader::<Authorization<Bearer>>::from_request(req)
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        // You can either call them directly...
+        let TypedHeader(Authorization(token)) =
+            TypedHeader::<Authorization<Bearer>>::from_request_parts(parts, state)
                 .await
                 .map_err(|err| err.into_response())?;
 
-        let Extension(state): Extension<State> = Extension::from_request(req)
+        // ... or use `extract` / `extract_with_state` from `RequestExt` / `RequestPartsExt`
+        use axum::RequestPartsExt;
+        let Extension(state) = parts.extract::<Extension<State>>()
             .await
             .map_err(|err| err.into_response())?;
 
-        // actually perform the authorization...
-        unimplemented!()
+        unimplemented!("actually perform the authorization")
     }
 }
 
@@ -434,6 +623,14 @@ let app = Router::new().route("/", get(handler)).layer(Extension(state));
 # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 # };
 ```
+
+# Request body limits
+
+For security reasons, [`Bytes`] will, by default, not accept bodies larger than
+2MB. This also applies to extractors that uses [`Bytes`] internally such as
+`String`, [`Json`], and [`Form`].
+
+For more details, including how to disable this limit, see [`DefaultBodyLimit`].
 
 # Request body extractors
 
@@ -510,7 +707,130 @@ let app = Router::new()
 # };
 ```
 
+# Running extractors from middleware
+
+Extractors can also be run from middleware:
+
+```rust
+use axum::{
+    middleware::{self, Next},
+    extract::{TypedHeader, FromRequestParts},
+    http::{Request, StatusCode},
+    response::Response,
+    headers::authorization::{Authorization, Bearer},
+    RequestPartsExt, Router,
+};
+
+async fn auth_middleware<B>(
+    request: Request<B>,
+    next: Next<B>,
+) -> Result<Response, StatusCode>
+where
+    B: Send,
+{
+    // running extractors requires a `axum::http::request::Parts`
+    let (mut parts, body) = request.into_parts();
+
+    // `TypedHeader<Authorization<Bearer>>` extracts the auth token
+    let auth: TypedHeader<Authorization<Bearer>> = parts.extract()
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    if !token_is_valid(auth.token()) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // reconstruct the request
+    let request = Request::from_parts(parts, body);
+
+    Ok(next.run(request).await)
+}
+
+fn token_is_valid(token: &str) -> bool {
+    // ...
+    # false
+}
+
+let app = Router::new().layer(middleware::from_fn(auth_middleware));
+# let _: Router<()> = app;
+```
+
+# Wrapping extractors
+
+If you want write an extractor that generically wraps another extractor (that
+may or may not consume the request body) you should implement both
+[`FromRequest`] and [`FromRequestParts`]:
+
+```rust
+use axum::{
+    Router,
+    routing::get,
+    extract::{FromRequest, FromRequestParts},
+    http::{Request, HeaderMap, request::Parts},
+    async_trait,
+};
+use std::time::{Instant, Duration};
+
+// an extractor that wraps another and measures how long time it takes to run
+struct Timing<E> {
+    extractor: E,
+    duration: Duration,
+}
+
+// we must implement both `FromRequestParts`
+#[async_trait]
+impl<S, T> FromRequestParts<S> for Timing<T>
+where
+    S: Send + Sync,
+    T: FromRequestParts<S>,
+{
+    type Rejection = T::Rejection;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let start = Instant::now();
+        let extractor = T::from_request_parts(parts, state).await?;
+        let duration = start.elapsed();
+        Ok(Timing {
+            extractor,
+            duration,
+        })
+    }
+}
+
+// and `FromRequest`
+#[async_trait]
+impl<S, B, T> FromRequest<S, B> for Timing<T>
+where
+    B: Send + 'static,
+    S: Send + Sync,
+    T: FromRequest<S, B>,
+{
+    type Rejection = T::Rejection;
+
+    async fn from_request(req: Request<B>, state: &S) -> Result<Self, Self::Rejection> {
+        let start = Instant::now();
+        let extractor = T::from_request(req, state).await?;
+        let duration = start.elapsed();
+        Ok(Timing {
+            extractor,
+            duration,
+        })
+    }
+}
+
+async fn handler(
+    // this uses the `FromRequestParts` impl
+    _: Timing<HeaderMap>,
+    // this uses the `FromRequest` impl
+    _: Timing<String>,
+) {}
+# let _: axum::routing::MethodRouter = axum::routing::get(handler);
+```
+
 [`body::Body`]: crate::body::Body
+[`Bytes`]: crate::body::Bytes
 [customize-extractor-error]: https://github.com/tokio-rs/axum/blob/main/examples/customize-extractor-error/src/main.rs
 [`HeaderMap`]: https://docs.rs/http/latest/http/header/struct.HeaderMap.html
 [`Request`]: https://docs.rs/http/latest/http/struct.Request.html
+[`RequestParts::body_mut`]: crate::extract::RequestParts::body_mut
+[`JsonRejection::JsonDataError`]: rejection::JsonRejection::JsonDataError

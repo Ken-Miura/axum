@@ -111,23 +111,22 @@ This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in
 
 ## Minimum supported Rust version
 
-axum's MSRV is 1.54.
+axum's MSRV is 1.60.
 
 ## Examples
 
 The [examples] folder contains various examples of how to use `axum`. The
-[docs] also have lots of examples
+[docs] also provide lots of code snippets and examples. For full-fledged examples, check out community-maintained [showcases] or [tutorials].
 
 ## Getting Help
 
 In the `axum`'s repo we also have a [number of examples][examples] showing how
-to put everything together. You're also welcome to ask in the [Discord
-channel][chat] or open an [issue] with your question.
+to put everything together. Community-maintained [showcases] and [tutorials] also demonstrate how to use `axum` for real-world applications. You're also welcome to ask in the [Discord channel][chat] or open a [discussion] with your question.
 
 ## Community projects
 
 See [here][ecosystem] for a list of community maintained crates and projects
-built with axum.
+built with `axum`.
 
 ## Contributing
 
@@ -154,7 +153,9 @@ additional terms or conditions.
 [`tonic`]: https://crates.io/crates/tonic
 [contributing]: https://github.com/tokio-rs/axum/blob/main/CONTRIBUTING.md
 [chat]: https://discord.gg/tokio
-[issue]: https://github.com/tokio-rs/axum/issues/new
+[discussion]: https://github.com/tokio-rs/axum/discussions/new?category=q-a
 [`tower::Service`]: https://docs.rs/tower/latest/tower/trait.Service.html
 [ecosystem]: https://github.com/tokio-rs/axum/blob/main/ECOSYSTEM.md
+[showcases]: https://github.com/tokio-rs/axum/blob/main/ECOSYSTEM.md#project-showcase
+[tutorials]: https://github.com/tokio-rs/axum/blob/main/ECOSYSTEM.md#tutorials
 [license]: https://github.com/tokio-rs/axum/blob/main/axum/LICENSE

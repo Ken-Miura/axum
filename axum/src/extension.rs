@@ -1,10 +1,10 @@
-use crate::{
-    extract::{rejection::*, FromRequest, RequestParts},
-    response::IntoResponseParts,
-};
+use crate::{extract::rejection::*, response::IntoResponseParts};
 use async_trait::async_trait;
-use axum_core::response::{IntoResponse, Response, ResponseParts};
-use http::Request;
+use axum_core::{
+    extract::FromRequestParts,
+    response::{IntoResponse, Response, ResponseParts},
+};
+use http::{request::Parts, Request};
 use std::{
     convert::Infallible,
     ops::Deref,
@@ -59,7 +59,7 @@ use tower_service::Service;
 ///     response::IntoResponse,
 /// };
 ///
-/// async fn handler() -> impl IntoResponse {
+/// async fn handler() -> (Extension<Foo>, &'static str) {
 ///     (
 ///         Extension(Foo("foo")),
 ///         "Hello, World!"
@@ -69,20 +69,20 @@ use tower_service::Service;
 /// #[derive(Clone)]
 /// struct Foo(&'static str);
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Extension<T>(pub T);
 
 #[async_trait]
-impl<T, B> FromRequest<B> for Extension<T>
+impl<T, S> FromRequestParts<S> for Extension<T>
 where
     T: Clone + Send + Sync + 'static,
-    B: Send,
+    S: Send + Sync,
 {
     type Rejection = ExtensionRejection;
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(req: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let value = req
-            .extensions()
+            .extensions
             .get::<T>()
             .ok_or_else(|| {
                 MissingExtension::from_err(format!(

@@ -1,16 +1,16 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-versioning
+//! cd examples && cargo run -p example-versioning
 //! ```
 
 use axum::{
     async_trait,
-    extract::{FromRequest, Path, RequestParts},
-    http::StatusCode,
+    extract::{FromRequestParts, Path},
+    http::{request::Parts, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
+    RequestPartsExt, Router,
 };
 use std::{collections::HashMap, net::SocketAddr};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -18,9 +18,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_versioning=debug".into()),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "example_versioning=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -48,16 +49,15 @@ enum Version {
 }
 
 #[async_trait]
-impl<B> FromRequest<B> for Version
+impl<S> FromRequestParts<S> for Version
 where
-    B: Send,
+    S: Send + Sync,
 {
     type Rejection = Response;
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let params = Path::<HashMap<String, String>>::from_request(req)
-            .await
-            .map_err(IntoResponse::into_response)?;
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let params: Path<HashMap<String, String>> =
+            parts.extract().await.map_err(IntoResponse::into_response)?;
 
         let version = params
             .get("version")

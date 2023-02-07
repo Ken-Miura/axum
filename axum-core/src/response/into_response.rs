@@ -3,7 +3,7 @@ use crate::{body, BoxError};
 use bytes::{buf::Chain, Buf, Bytes, BytesMut};
 use http::{
     header::{self, HeaderMap, HeaderName, HeaderValue},
-    StatusCode,
+    Extensions, StatusCode,
 };
 use http_body::{
     combinators::{MapData, MapErr},
@@ -11,7 +11,7 @@ use http_body::{
 };
 use std::{
     borrow::Cow,
-    convert::{Infallible, TryInto},
+    convert::Infallible,
     fmt,
     pin::Pin,
     task::{Context, Poll},
@@ -348,6 +348,18 @@ impl IntoResponse for &'static [u8] {
     }
 }
 
+impl<const N: usize> IntoResponse for &'static [u8; N] {
+    fn into_response(self) -> Response {
+        self.as_slice().into_response()
+    }
+}
+
+impl<const N: usize> IntoResponse for [u8; N] {
+    fn into_response(self) -> Response {
+        self.to_vec().into_response()
+    }
+}
+
 impl IntoResponse for Vec<u8> {
     fn into_response(self) -> Response {
         Cow::<'static, [u8]>::Owned(self).into_response()
@@ -384,6 +396,14 @@ impl IntoResponse for HeaderMap {
     }
 }
 
+impl IntoResponse for Extensions {
+    fn into_response(self) -> Response {
+        let mut res = ().into_response();
+        *res.extensions_mut() = self;
+        res
+    }
+}
+
 impl<K, V, const N: usize> IntoResponse for [(K, V); N]
 where
     K: TryInto<HeaderName>,
@@ -393,6 +413,27 @@ where
 {
     fn into_response(self) -> Response {
         (self, ()).into_response()
+    }
+}
+
+impl<R> IntoResponse for (http::response::Parts, R)
+where
+    R: IntoResponse,
+{
+    fn into_response(self) -> Response {
+        let (parts, res) = self;
+        (parts.status, parts.headers, parts.extensions, res).into_response()
+    }
+}
+
+impl<R> IntoResponse for (http::response::Response<()>, R)
+where
+    R: IntoResponse,
+{
+    fn into_response(self) -> Response {
+        let (template, res) = self;
+        let (parts, ()) = template.into_parts();
+        (parts, res).into_response()
     }
 }
 
@@ -444,12 +485,47 @@ macro_rules! impl_into_response {
                     };
                 )*
 
-                let mut res = parts.res;
-                *res.status_mut() = status;
-                res
+                (status, parts.res).into_response()
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<R, $($ty,)*> IntoResponse for (http::response::Parts, $($ty),*, R)
+        where
+            $( $ty: IntoResponseParts, )*
+            R: IntoResponse,
+        {
+            fn into_response(self) -> Response {
+                let (outer_parts, $($ty),*, res) = self;
+
+                let res = res.into_response();
+                let parts = ResponseParts { res };
+                $(
+                    let parts = match $ty.into_response_parts(parts) {
+                        Ok(parts) => parts,
+                        Err(err) => {
+                            return err.into_response();
+                        }
+                    };
+                )*
+
+                (outer_parts, parts.res).into_response()
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<R, $($ty,)*> IntoResponse for (http::response::Response<()>, $($ty),*, R)
+        where
+            $( $ty: IntoResponseParts, )*
+            R: IntoResponse,
+        {
+            fn into_response(self) -> Response {
+                let (template, $($ty),*, res) = self;
+                let (parts, ()) = template.into_parts();
+                (parts, $($ty),*, res).into_response()
             }
         }
     }
 }
 
-all_the_tuples!(impl_into_response);
+all_the_tuples_no_last_special_case!(impl_into_response);

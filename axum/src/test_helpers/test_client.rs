@@ -5,10 +5,7 @@ use http::{
     Request, StatusCode,
 };
 use hyper::{Body, Server};
-use std::{
-    convert::TryFrom,
-    net::{SocketAddr, TcpListener},
-};
+use std::net::{SocketAddr, TcpListener};
 use tower::make::Shared;
 use tower_service::Service;
 
@@ -29,7 +26,7 @@ impl TestClient {
     {
         let listener = TcpListener::bind("127.0.0.1:0").expect("Could not bind ephemeral socket");
         let addr = listener.local_addr().unwrap();
-        println!("Listening on {}", addr);
+        println!("Listening on {addr}");
 
         tokio::spawn(async move {
             let server = Server::from_tcp(listener).unwrap().serve(Shared::new(svc));
@@ -112,17 +109,24 @@ impl RequestBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub(crate) fn multipart(mut self, form: reqwest::multipart::Form) -> Self {
         self.builder = self.builder.multipart(form);
         self
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct TestResponse {
     response: reqwest::Response,
 }
 
 impl TestResponse {
+    #[allow(dead_code)]
+    pub(crate) async fn bytes(self) -> Bytes {
+        self.response.bytes().await.unwrap()
+    }
+
     pub(crate) async fn text(self) -> String {
         self.response.text().await.unwrap()
     }

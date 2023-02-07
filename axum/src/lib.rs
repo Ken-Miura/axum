@@ -1,8 +1,9 @@
+#![cfg_attr(nightly_error_messages, feature(rustc_attrs))]
 //! axum is a web application framework that focuses on ergonomics and modularity.
 //!
 //! # Table of contents
 //!
-//! - [High level features](#high-level-features)
+//! - [High-level features](#high-level-features)
 //! - [Compatibility](#compatibility)
 //! - [Example](#example)
 //! - [Routing](#routing)
@@ -17,16 +18,16 @@
 //! - [Examples](#examples)
 //! - [Feature flags](#feature-flags)
 //!
-//! # High level features
+//! # High-level features
 //!
-//! - Route requests to handlers with a macro free API.
+//! - Route requests to handlers with a macro-free API.
 //! - Declaratively parse requests using extractors.
 //! - Simple and predictable error handling model.
 //! - Generate responses with minimal boilerplate.
 //! - Take full advantage of the [`tower`] and [`tower-http`] ecosystem of
 //!   middleware, services, and utilities.
 //!
-//! In particular the last point is what sets `axum` apart from other frameworks.
+//! In particular, the last point is what sets `axum` apart from other frameworks.
 //! `axum` doesn't have its own middleware system but instead uses
 //! [`tower::Service`]. This means `axum` gets timeouts, tracing, compression,
 //! authorization, and more, for free. It also enables you to share middleware with
@@ -59,6 +60,9 @@
 //!         .unwrap();
 //! }
 //! ```
+//!
+//! Note using `#[tokio::main]` requires you enable tokio's `macros` and `rt-multi-thread` features
+//! or just `full` to enable all features (`cargo add tokio --features macros,rt-multi-thread`).
 //!
 //! # Routing
 //!
@@ -93,8 +97,8 @@
 //!
 //! # Extractors
 //!
-//! An extractor is a type that implements [`FromRequest`]. Extractors is how
-//! you pick apart the incoming request to get the parts your handler needs.
+//! An extractor is a type that implements [`FromRequest`] or [`FromRequestParts`]. Extractors are
+//! how you pick apart the incoming request to get the parts your handler needs.
 //!
 //! ```rust
 //! use axum::extract::{Path, Query, Json};
@@ -164,17 +168,54 @@
 //!
 //! # Sharing state with handlers
 //!
-//! It is common to share some state between handlers for example to share a
-//! pool of database connections or clients to other services.
+//! It is common to share some state between handlers. For example, a
+//! pool of database connections or clients to other services may need to
+//! be shared.
 //!
-//! The two most common ways of doing that is:
+//! The three most common ways of doing that are:
+//! - Using the [`State`] extractor
 //! - Using request extensions
 //! - Using closure captures
 //!
+//! ## Using the [`State`] extractor
+//!
+//! ```rust,no_run
+//! use axum::{
+//!     extract::State,
+//!     routing::get,
+//!     Router,
+//! };
+//! use std::sync::Arc;
+//!
+//! struct AppState {
+//!     // ...
+//! }
+//!
+//! let shared_state = Arc::new(AppState { /* ... */ });
+//!
+//! let app = Router::new()
+//!     .route("/", get(handler))
+//!     .with_state(shared_state);
+//!
+//! async fn handler(
+//!     State(state): State<Arc<AppState>>,
+//! ) {
+//!     // ...
+//! }
+//! # async {
+//! # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
+//! # };
+//! ```
+//!
+//! You should prefer using [`State`] if possible since it's more type safe. The downside is that
+//! it's less dynamic than request extensions.
+//!
+//! See [`State`] for more details about accessing state.
+//!
 //! ## Using request extensions
 //!
-//! The easiest way to extract state in handlers is using [`Extension`](crate::extract::Extension)
-//! as layer and extractor:
+//! Another way to extract state in handlers is using [`Extension`](crate::extract::Extension) as
+//! layer and extractor:
 //!
 //! ```rust,no_run
 //! use axum::{
@@ -184,18 +225,18 @@
 //! };
 //! use std::sync::Arc;
 //!
-//! struct State {
+//! struct AppState {
 //!     // ...
 //! }
 //!
-//! let shared_state = Arc::new(State { /* ... */ });
+//! let shared_state = Arc::new(AppState { /* ... */ });
 //!
 //! let app = Router::new()
 //!     .route("/", get(handler))
 //!     .layer(Extension(shared_state));
 //!
 //! async fn handler(
-//!     Extension(state): Extension<Arc<State>>,
+//!     Extension(state): Extension<Arc<AppState>>,
 //! ) {
 //!     // ...
 //! }
@@ -206,7 +247,7 @@
 //!
 //! The downside to this approach is that you'll get runtime errors
 //! (specifically a `500 Internal Server Error` response) if you try and extract
-//! an extension that doesn't exist, perhaps because you forgot add the
+//! an extension that doesn't exist, perhaps because you forgot to add the
 //! middleware or because you're extracting the wrong type.
 //!
 //! ## Using closure captures
@@ -223,33 +264,33 @@
 //! use std::sync::Arc;
 //! use serde::Deserialize;
 //!
-//! struct State {
+//! struct AppState {
 //!     // ...
 //! }
 //!
-//! let shared_state = Arc::new(State { /* ... */ });
+//! let shared_state = Arc::new(AppState { /* ... */ });
 //!
 //! let app = Router::new()
 //!     .route(
 //!         "/users",
 //!         post({
 //!             let shared_state = Arc::clone(&shared_state);
-//!             move |body| create_user(body, Arc::clone(&shared_state))
+//!             move |body| create_user(body, shared_state)
 //!         }),
 //!     )
 //!     .route(
 //!         "/users/:id",
 //!         get({
 //!             let shared_state = Arc::clone(&shared_state);
-//!             move |path| get_user(path, Arc::clone(&shared_state))
+//!             move |path| get_user(path, shared_state)
 //!         }),
 //!     );
 //!
-//! async fn get_user(Path(user_id): Path<String>, state: Arc<State>) {
+//! async fn get_user(Path(user_id): Path<String>, state: Arc<AppState>) {
 //!     // ...
 //! }
 //!
-//! async fn create_user(Json(payload): Json<CreateUserPayload>, state: Arc<State>) {
+//! async fn create_user(Json(payload): Json<CreateUserPayload>, state: Arc<AppState>) {
 //!     // ...
 //! }
 //!
@@ -263,17 +304,18 @@
 //! ```
 //!
 //! The downside to this approach is that it's a little more verbose than using
-//! extensions.
+//! [`State`] or extensions.
 //!
 //! # Building integrations for axum
 //!
-//! Libraries authors that want to provide [`FromRequest`] or [`IntoResponse`] implementations
-//! should depend on the [`axum-core`] crate, instead of `axum` if possible. [`axum-core`] contains
-//! core types and traits and is less likely to receive breaking changes.
+//! Libraries authors that want to provide [`FromRequest`], [`FromRequestParts`], or
+//! [`IntoResponse`] implementations should depend on the [`axum-core`] crate, instead of `axum` if
+//! possible. [`axum-core`] contains core types and traits and is less likely to receive breaking
+//! changes.
 //!
 //! # Required dependencies
 //!
-//! To use axum there are a few dependencies you have pull in as well:
+//! To use axum there are a few dependencies you have to pull in as well:
 //!
 //! ```toml
 //! [dependencies]
@@ -286,7 +328,7 @@
 //! The `"full"` feature for hyper and tokio isn't strictly necessary but it's
 //! the easiest way to get started.
 //!
-//! Note that [`hyper::Server`] is re-exported by axum so if thats all you need
+//! Note that [`hyper::Server`] is re-exported by axum so if that's all you need
 //! then you don't have to explicitly depend on hyper.
 //!
 //! Tower isn't strictly necessary either but helpful for testing. See the
@@ -310,11 +352,15 @@
 //! `http1` | Enables hyper's `http1` feature | Yes
 //! `http2` | Enables hyper's `http2` feature | No
 //! `json` | Enables the [`Json`] type and some similar convenience functionality | Yes
+//! `macros` | Enables optional utility macros | No
 //! `matched-path` | Enables capturing of every request's router path and the [`MatchedPath`] extractor | Yes
 //! `multipart` | Enables parsing `multipart/form-data` requests with [`Multipart`] | No
 //! `original-uri` | Enables capturing of every request's original URI and the [`OriginalUri`] extractor | Yes
+//! `tokio` | Enables `tokio` as a dependency and `axum::Server`, `SSE` and `extract::connect_info` types. | Yes
 //! `tower-log` | Enables `tower`'s `log` feature | Yes
 //! `ws` | Enables WebSockets support via [`extract::ws`] | No
+//! `form` | Enables the `Form` extractor | Yes
+//! `query` | Enables the `Query` extractor | Yes
 //!
 //! [`TypedHeader`]: crate::extract::TypedHeader
 //! [`MatchedPath`]: crate::extract::MatchedPath
@@ -338,6 +384,7 @@
 //! [tower-guides]: https://github.com/tower-rs/tower/tree/master/guides
 //! [`Uuid`]: https://docs.rs/uuid/latest/uuid/
 //! [`FromRequest`]: crate::extract::FromRequest
+//! [`FromRequestParts`]: crate::extract::FromRequestParts
 //! [`HeaderMap`]: http::header::HeaderMap
 //! [`Request`]: http::Request
 //! [customize-extractor-error]: https://github.com/tokio-rs/axum/blob/main/examples/customize-extractor-error/src/main.rs
@@ -347,6 +394,7 @@
 //! [`Infallible`]: std::convert::Infallible
 //! [load shed]: tower::load_shed
 //! [`axum-core`]: http://crates.io/crates/axum-core
+//! [`State`]: crate::extract::State
 
 #![warn(
     clippy::all,
@@ -392,9 +440,13 @@
 #[macro_use]
 pub(crate) mod macros;
 
+mod boxed;
 mod extension;
+#[cfg(feature = "form")]
+mod form;
 #[cfg(feature = "json")]
 mod json;
+mod service_ext;
 #[cfg(feature = "headers")]
 mod typed_header;
 mod util;
@@ -417,6 +469,7 @@ pub use async_trait::async_trait;
 pub use headers;
 #[doc(no_inline)]
 pub use http;
+#[cfg(feature = "tokio")]
 #[doc(no_inline)]
 pub use hyper::Server;
 
@@ -433,4 +486,16 @@ pub use self::routing::Router;
 pub use self::typed_header::TypedHeader;
 
 #[doc(inline)]
-pub use axum_core::{BoxError, Error};
+#[cfg(feature = "form")]
+pub use self::form::Form;
+
+#[doc(inline)]
+pub use axum_core::{BoxError, Error, RequestExt, RequestPartsExt};
+
+#[cfg(feature = "macros")]
+pub use axum_macros::debug_handler;
+
+pub use self::service_ext::ServiceExt;
+
+#[cfg(test)]
+use axum_macros::__private_axum_test as test;

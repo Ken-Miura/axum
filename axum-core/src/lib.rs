@@ -1,3 +1,4 @@
+#![cfg_attr(nightly_error_messages, feature(rustc_attrs))]
 //! Core types and traits for [`axum`].
 //!
 //! Libraries authors that want to provide [`FromRequest`] or [`IntoResponse`] implementations
@@ -46,13 +47,13 @@
 #![deny(unreachable_pub, private_in_public)]
 #![allow(elided_lifetimes_in_paths, clippy::type_complexity)]
 #![forbid(unsafe_code)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 #[macro_use]
 pub(crate) mod macros;
 
 mod error;
+mod ext_traits;
 pub use self::error::Error;
 
 pub mod body;
@@ -61,3 +62,5 @@ pub mod response;
 
 /// Alias for a type-erased error type.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+pub use self::ext_traits::{request::RequestExt, request_parts::RequestPartsExt};

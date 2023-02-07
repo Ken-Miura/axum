@@ -2,6 +2,7 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
+  MSRV: '1.60'
 
 on:
   push:
@@ -11,33 +12,42 @@ on:
 
 jobs:
   check:
-    # Run `cargo check` first to ensure that the pushed code at least compiles.
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pwd:
+          - .
+          - examples
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: arduino/setup-protoc@v1
+      if: matrix.pwd == 'examples'
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: beta
         override: true
         profile: minimal
         components: clippy, rustfmt
-    - uses: Swatinem/rust-cache@v1
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.pwd }}
+        workspaces: ${{ matrix.pwd }}
     - name: Check
-      uses: actions-rs/cargo@v1
-      with:
-        command: clippy
-        args: --all --all-targets --all-features
+      working-directory: ${{ matrix.pwd }}
+      run: |
+        cargo clippy --all --all-targets --all-features
     - name: rustfmt
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: --all -- --check
+      working-directory: ${{ matrix.pwd }}
+      run: |
+        cargo fmt --all -- --check
 
   check-docs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         override: true
@@ -52,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         override: true
@@ -69,12 +79,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # nightly has an ICE, so ignore it for now
-        # rust: [stable, beta, nightly]
         rust: [stable, beta]
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust }}
         override: true
@@ -86,19 +94,53 @@ jobs:
         command: test
         args: --all --all-features --all-targets
 
-  # some examples doesn't support 1.54 (such as async-graphql)
-  # so we only test axum itself on 1.54
+  test-nightly:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        # same as `axum-macros/rust-toolchain`
+        toolchain: nightly-2022-11-18
+        override: true
+        profile: minimal
+    - uses: Swatinem/rust-cache@v1
+    - name: Run nightly tests
+      working-directory: axum-macros
+      run: |
+        cargo test
+
+  # some examples doesn't support our MSRV (such as async-graphql)
+  # so we only test axum itself on our MSRV
   test-msrv:
     needs: check
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.54
+        toolchain: ${{ env.MSRV }}
         override: true
         profile: minimal
+    - name: "install Rust nightly"
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: nightly
+        profile: minimal
     - uses: Swatinem/rust-cache@v1
+    - name: Select minimal versions
+      uses: actions-rs/cargo@v1
+      with:
+        command: update
+        args: -Z minimal-versions
+        toolchain: nightly
+    - name: Fix up Cargo.lock
+      uses: actions-rs/cargo@v1
+      with:
+        command: update
+        args: -p crc32fast --precise 1.1.1
+        toolchain: nightly
     - name: Run tests
       uses: actions-rs/cargo@v1
       with:
@@ -106,8 +148,12 @@ jobs:
         args: >
           -p axum
           -p axum-extra
-          --all-features --all-targets
-    # the compiler errors are different on 1.54 which makes
+          -p axum-core
+          --all-features
+          --all-targets
+          --locked
+        toolchain: ${{ env.MSRV }}
+    # the compiler errors are different on our MSRV which makes
     # the trybuild tests in axum-macros fail, so just run the doc
     # tests
     - name: Run axum-macros doc tests
@@ -118,13 +164,15 @@ jobs:
           -p axum-macros
           --doc
           --all-features
+          --locked
+        toolchain: ${{ env.MSRV }}
 
   test-docs:
     needs: check
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         override: true
@@ -157,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@master
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         target: armv5te-unknown-linux-musleabi
@@ -179,3 +227,52 @@ jobs:
           -p axum-extra
           -p axum-macros
           --target armv5te-unknown-linux-musleabi
+
+  wasm32-unknown-unknown:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        target: wasm32-unknown-unknown
+        override: true
+        profile: minimal
+    - uses: Swatinem/rust-cache@v1
+    - name: Check
+      uses: actions-rs/cargo@v1
+      with:
+        command: check
+        args: >
+          --manifest-path ./examples/simple-router-wasm/Cargo.toml
+          --target wasm32-unknown-unknown
+
+  dependencies-are-sorted:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pwd:
+          - .
+          - examples
+    steps:
+    - uses: actions/checkout@master
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: beta
+        override: true
+        profile: minimal
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.pwd }}
+        workspaces: ${{ matrix.pwd }}
+    - name: Install cargo-sort
+      run: |
+        cargo install cargo-sort
+    - name: Remove non-crate folder
+      run: rm -rf async-graphql || true
+      working-directory: ${{ matrix.pwd }}
+    - name: Check dependency tables
+      working-directory: ${{ matrix.pwd }}
+      run: |
+        cargo sort --workspace --grouped --check

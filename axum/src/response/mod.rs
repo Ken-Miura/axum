@@ -5,6 +5,7 @@ use http::{header, HeaderValue};
 
 mod redirect;
 
+#[cfg(feature = "tokio")]
 pub mod sse;
 
 #[doc(no_inline)]
@@ -15,16 +16,24 @@ pub use crate::Json;
 #[cfg(feature = "headers")]
 pub use crate::TypedHeader;
 
+#[cfg(feature = "form")]
+#[doc(no_inline)]
+pub use crate::form::Form;
+
 #[doc(no_inline)]
 pub use crate::Extension;
 
 #[doc(inline)]
 pub use axum_core::response::{
-    AppendHeaders, IntoResponse, IntoResponseParts, Response, ResponseParts,
+    AppendHeaders, ErrorResponse, IntoResponse, IntoResponseParts, Response, ResponseParts, Result,
 };
 
 #[doc(inline)]
-pub use self::{redirect::Redirect, sse::Sse};
+pub use self::redirect::Redirect;
+
+#[doc(inline)]
+#[cfg(feature = "tokio")]
+pub use sse::Sse;
 
 /// An HTML response.
 ///
@@ -89,7 +98,7 @@ mod tests {
             }
         }
 
-        Router::<Body>::new()
+        Router::<(), Body>::new()
             .route("/", get(impl_trait_ok))
             .route("/", get(impl_trait_err))
             .route("/", get(impl_trait_both))
@@ -199,7 +208,7 @@ mod tests {
             )
         }
 
-        Router::<Body>::new()
+        Router::<(), Body>::new()
             .route("/", get(status))
             .route("/", get(status_headermap))
             .route("/", get(status_header_array))

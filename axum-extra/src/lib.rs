@@ -1,5 +1,27 @@
 //! Extra utilities for [`axum`].
 //!
+//! # Feature flags
+//!
+//! axum-extra uses a set of [feature flags] to reduce the amount of compiled and
+//! optional dependencies.
+//!
+//! The following optional features are available:
+//!
+//! Name | Description | Default?
+//! ---|---|---
+//! `async-read-body` | Enables the `AsyncReadBody` body | No
+//! `cookie` | Enables the `CookieJar` extractor | No
+//! `cookie-private` | Enables the `PrivateCookieJar` extractor | No
+//! `cookie-signed` | Enables the `SignedCookieJar` extractor | No
+//! `cookie-key-expansion` | Enables the `Key::derive_from` method | No
+//! `erased-json` | Enables the `ErasedJson` response | No
+//! `form` | Enables the `Form` extractor | No
+//! `json-lines` | Enables the `JsonLines` extractor and response | No
+//! `protobuf` | Enables the `ProtoBuf` extractor and response | No
+//! `query` | Enables the `Query` extractor | No
+//! `spa` | Enables the `Spa` router | No
+//! `typed-routing` | Enables the `TypedPath` routing utilities | No
+//!
 //! [`axum`]: https://crates.io/crates/axum
 
 #![warn(
@@ -43,9 +65,18 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+pub mod body;
+pub mod either;
 pub mod extract;
+pub mod handler;
 pub mod response;
 pub mod routing;
+
+#[cfg(feature = "json-lines")]
+pub mod json_lines;
+
+#[cfg(feature = "protobuf")]
+pub mod protobuf;
 
 #[cfg(feature = "typed-routing")]
 #[doc(hidden)]
@@ -66,7 +97,7 @@ pub mod __private {
 pub(crate) mod test_helpers {
     #![allow(unused_imports)]
 
-    use axum::{body::HttpBody, BoxError};
+    use axum::{body::HttpBody, BoxError, Router};
 
     mod test_client {
         #![allow(dead_code)]

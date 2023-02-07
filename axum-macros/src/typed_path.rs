@@ -1,6 +1,8 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
-use syn::{ItemStruct, LitStr};
+use syn::{parse::Parse, ItemStruct, LitStr, Token};
+
+use crate::attr_parsing::{combine_attribute, parse_parenthesized_attribute, second, Combine};
 
 pub(crate) fn expand(item_struct: ItemStruct) -> syn::Result<TokenStream> {
     let ItemStruct {
@@ -18,52 +20,85 @@ pub(crate) fn expand(item_struct: ItemStruct) -> syn::Result<TokenStream> {
         ));
     }
 
-    let Attrs { path } = parse_attrs(attrs)?;
+    let Attrs { path, rejection } = crate::attr_parsing::parse_attrs("typed_path", attrs)?;
+
+    let path = path.ok_or_else(|| {
+        syn::Error::new(
+            Span::call_site(),
+            "Missing path: `#[typed_path(\"/foo/bar\")]`",
+        )
+    })?;
+
+    let rejection = rejection.map(second);
 
     match fields {
         syn::Fields::Named(_) => {
             let segments = parse_path(&path)?;
-            Ok(expand_named_fields(ident, path, &segments))
+            Ok(expand_named_fields(ident, path, &segments, rejection))
         }
         syn::Fields::Unnamed(fields) => {
             let segments = parse_path(&path)?;
-            expand_unnamed_fields(fields, ident, path, &segments)
+            expand_unnamed_fields(fields, ident, path, &segments, rejection)
         }
-        syn::Fields::Unit => expand_unit_fields(ident, path),
+        syn::Fields::Unit => expand_unit_fields(ident, path, rejection),
     }
 }
 
+mod kw {
+    syn::custom_keyword!(rejection);
+}
+
+#[derive(Default)]
 struct Attrs {
-    path: LitStr,
+    path: Option<LitStr>,
+    rejection: Option<(kw::rejection, syn::Path)>,
 }
 
-fn parse_attrs(attrs: &[syn::Attribute]) -> syn::Result<Attrs> {
-    let mut path = None;
+impl Parse for Attrs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut path = None;
+        let mut rejection = None;
 
-    for attr in attrs {
-        if attr.path.is_ident("typed_path") {
-            if path.is_some() {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "`typed_path` specified more than once",
-                ));
+        while !input.is_empty() {
+            let lh = input.lookahead1();
+            if lh.peek(LitStr) {
+                path = Some(input.parse()?);
+            } else if lh.peek(kw::rejection) {
+                parse_parenthesized_attribute(input, &mut rejection)?;
             } else {
-                path = Some(attr.parse_args()?);
+                return Err(lh.error());
             }
-        }
-    }
 
-    Ok(Attrs {
-        path: path.ok_or_else(|| {
-            syn::Error::new(
-                Span::call_site(),
-                "missing `#[typed_path(\"...\")]` attribute",
-            )
-        })?,
-    })
+            let _ = input.parse::<Token![,]>();
+        }
+
+        Ok(Self { path, rejection })
+    }
 }
 
-fn expand_named_fields(ident: &syn::Ident, path: LitStr, segments: &[Segment]) -> TokenStream {
+impl Combine for Attrs {
+    fn combine(mut self, other: Self) -> syn::Result<Self> {
+        let Self { path, rejection } = other;
+        if let Some(path) = path {
+            if self.path.is_some() {
+                return Err(syn::Error::new_spanned(
+                    path,
+                    "path specified more than once",
+                ));
+            }
+            self.path = Some(path);
+        }
+        combine_attribute(&mut self.rejection, rejection)?;
+        Ok(self)
+    }
+}
+
+fn expand_named_fields(
+    ident: &syn::Ident,
+    path: LitStr,
+    segments: &[Segment],
+    rejection: Option<syn::Path>,
+) -> TokenStream {
     let format_str = format_str_from_path(segments);
     let captures = captures_from_path(segments);
 
@@ -77,28 +112,43 @@ fn expand_named_fields(ident: &syn::Ident, path: LitStr, segments: &[Segment]) -
     let display_impl = quote_spanned! {path.span()=>
         #[automatically_derived]
         impl ::std::fmt::Display for #ident {
+            #[allow(clippy::unnecessary_to_owned)]
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 let Self { #(#captures,)* } = self;
                 write!(
                     f,
                     #format_str,
-                    #(#captures = ::axum_extra::__private::utf8_percent_encode(&#captures.to_string(), ::axum_extra::__private::PATH_SEGMENT)),*
+                    #(
+                        #captures = ::axum_extra::__private::utf8_percent_encode(
+                            &#captures.to_string(),
+                            ::axum_extra::__private::PATH_SEGMENT,
+                        )
+                    ),*
                 )
             }
         }
     };
 
+    let rejection_assoc_type = rejection_assoc_type(&rejection);
+    let map_err_rejection = map_err_rejection(&rejection);
+
     let from_request_impl = quote! {
         #[::axum::async_trait]
         #[automatically_derived]
-        impl<B> ::axum::extract::FromRequest<B> for #ident
+        impl<S> ::axum::extract::FromRequestParts<S> for #ident
         where
-            B: Send,
+            S: Send + Sync,
         {
-            type Rejection = <::axum::extract::Path<Self> as ::axum::extract::FromRequest<B>>::Rejection;
+            type Rejection = #rejection_assoc_type;
 
-            async fn from_request(req: &mut ::axum::extract::RequestParts<B>) -> ::std::result::Result<Self, Self::Rejection> {
-                ::axum::extract::Path::from_request(req).await.map(|path| path.0)
+            async fn from_request_parts(
+                parts: &mut ::axum::http::request::Parts,
+                state: &S,
+            ) -> ::std::result::Result<Self, Self::Rejection> {
+                ::axum::extract::Path::from_request_parts(parts, state)
+                    .await
+                    .map(|path| path.0)
+                    #map_err_rejection
             }
         }
     };
@@ -115,6 +165,7 @@ fn expand_unnamed_fields(
     ident: &syn::Ident,
     path: LitStr,
     segments: &[Segment],
+    rejection: Option<syn::Path>,
 ) -> syn::Result<TokenStream> {
     let num_captures = segments
         .iter()
@@ -166,28 +217,43 @@ fn expand_unnamed_fields(
     let display_impl = quote_spanned! {path.span()=>
         #[automatically_derived]
         impl ::std::fmt::Display for #ident {
+            #[allow(clippy::unnecessary_to_owned)]
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 let Self { #(#destructure_self)* } = self;
                 write!(
                     f,
                     #format_str,
-                    #(#captures = ::axum_extra::__private::utf8_percent_encode(&#captures.to_string(), ::axum_extra::__private::PATH_SEGMENT)),*
+                    #(
+                        #captures = ::axum_extra::__private::utf8_percent_encode(
+                            &#captures.to_string(),
+                            ::axum_extra::__private::PATH_SEGMENT,
+                        )
+                    ),*
                 )
             }
         }
     };
 
+    let rejection_assoc_type = rejection_assoc_type(&rejection);
+    let map_err_rejection = map_err_rejection(&rejection);
+
     let from_request_impl = quote! {
         #[::axum::async_trait]
         #[automatically_derived]
-        impl<B> ::axum::extract::FromRequest<B> for #ident
+        impl<S> ::axum::extract::FromRequestParts<S> for #ident
         where
-            B: Send,
+            S: Send + Sync,
         {
-            type Rejection = <::axum::extract::Path<Self> as ::axum::extract::FromRequest<B>>::Rejection;
+            type Rejection = #rejection_assoc_type;
 
-            async fn from_request(req: &mut ::axum::extract::RequestParts<B>) -> ::std::result::Result<Self, Self::Rejection> {
-                ::axum::extract::Path::from_request(req).await.map(|path| path.0)
+            async fn from_request_parts(
+                parts: &mut ::axum::http::request::Parts,
+                state: &S,
+            ) -> ::std::result::Result<Self, Self::Rejection> {
+                ::axum::extract::Path::from_request_parts(parts, state)
+                    .await
+                    .map(|path| path.0)
+                    #map_err_rejection
             }
         }
     };
@@ -201,13 +267,17 @@ fn expand_unnamed_fields(
 
 fn simple_pluralize(count: usize, word: &str) -> String {
     if count == 1 {
-        format!("{} {}", count, word)
+        format!("{count} {word}")
     } else {
-        format!("{} {}s", count, word)
+        format!("{count} {word}s")
     }
 }
 
-fn expand_unit_fields(ident: &syn::Ident, path: LitStr) -> syn::Result<TokenStream> {
+fn expand_unit_fields(
+    ident: &syn::Ident,
+    path: LitStr,
+    rejection: Option<syn::Path>,
+) -> syn::Result<TokenStream> {
     for segment in parse_path(&path)? {
         match segment {
             Segment::Capture(_, span) => {
@@ -236,20 +306,38 @@ fn expand_unit_fields(ident: &syn::Ident, path: LitStr) -> syn::Result<TokenStre
         }
     };
 
+    let rejection_assoc_type = if let Some(rejection) = &rejection {
+        quote! { #rejection }
+    } else {
+        quote! { ::axum::http::StatusCode }
+    };
+    let create_rejection = if let Some(rejection) = &rejection {
+        quote! {
+            Err(<#rejection as ::std::default::Default>::default())
+        }
+    } else {
+        quote! {
+            Err(::axum::http::StatusCode::NOT_FOUND)
+        }
+    };
+
     let from_request_impl = quote! {
         #[::axum::async_trait]
         #[automatically_derived]
-        impl<B> ::axum::extract::FromRequest<B> for #ident
+        impl<S> ::axum::extract::FromRequestParts<S> for #ident
         where
-            B: Send,
+            S: Send + Sync,
         {
-            type Rejection = ::axum::http::StatusCode;
+            type Rejection = #rejection_assoc_type;
 
-            async fn from_request(req: &mut ::axum::extract::RequestParts<B>) -> ::std::result::Result<Self, Self::Rejection> {
-                if req.uri().path() == <Self as ::axum_extra::routing::TypedPath>::PATH {
+            async fn from_request_parts(
+                parts: &mut ::axum::http::request::Parts,
+                _state: &S,
+            ) -> ::std::result::Result<Self, Self::Rejection> {
+                if parts.uri.path() == <Self as ::axum_extra::routing::TypedPath>::PATH {
                     Ok(Self)
                 } else {
-                    Err(::axum::http::StatusCode::NOT_FOUND)
+                    #create_rejection
                 }
             }
         }
@@ -266,7 +354,7 @@ fn format_str_from_path(segments: &[Segment]) -> String {
     segments
         .iter()
         .map(|segment| match segment {
-            Segment::Capture(capture, _) => format!("{{{}}}", capture),
+            Segment::Capture(capture, _) => format!("{{{capture}}}"),
             Segment::Static(segment) => segment.to_owned(),
         })
         .collect::<Vec<_>>()
@@ -297,14 +385,10 @@ fn parse_path(path: &LitStr) -> syn::Result<Vec<Segment>> {
     path.value()
         .split('/')
         .map(|segment| {
-            if segment.contains('*') {
-                return Err(syn::Error::new_spanned(
-                    path,
-                    "`typed_path` cannot contain wildcards",
-                ));
-            }
-
-            if let Some(capture) = segment.strip_prefix(':') {
+            if let Some(capture) = segment
+                .strip_prefix(':')
+                .or_else(|| segment.strip_prefix('*'))
+            {
                 Ok(Segment::Capture(capture.to_owned(), path.span()))
             } else {
                 Ok(Segment::Static(segment.to_owned()))
@@ -318,17 +402,34 @@ enum Segment {
     Static(String),
 }
 
+fn path_rejection() -> TokenStream {
+    quote! {
+        <::axum::extract::Path<Self> as ::axum::extract::FromRequestParts<S>>::Rejection
+    }
+}
+
+fn rejection_assoc_type(rejection: &Option<syn::Path>) -> TokenStream {
+    match rejection {
+        Some(rejection) => quote! { #rejection },
+        None => path_rejection(),
+    }
+}
+
+fn map_err_rejection(rejection: &Option<syn::Path>) -> TokenStream {
+    rejection
+        .as_ref()
+        .map(|rejection| {
+            let path_rejection = path_rejection();
+            quote! {
+                .map_err(|rejection| {
+                    <#rejection as ::std::convert::From<#path_rejection>>::from(rejection)
+                })
+            }
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn ui() {
-    #[rustversion::stable]
-    fn go() {
-        let t = trybuild::TestCases::new();
-        t.compile_fail("tests/typed_path/fail/*.rs");
-        t.pass("tests/typed_path/pass/*.rs");
-    }
-
-    #[rustversion::not(stable)]
-    fn go() {}
-
-    go();
+    crate::run_ui_tests("typed_path");
 }

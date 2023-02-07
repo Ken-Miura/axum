@@ -1,7 +1,7 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-low-level-rustls
+//! cd examples && cargo run -p example-low-level-rustls
 //! ```
 
 use axum::{extract::ConnectInfo, routing::get, Router};
@@ -11,7 +11,14 @@ use hyper::server::{
     conn::{AddrIncoming, Http},
 };
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::{fs::File, io::BufReader, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{
+    fs::File,
+    io::BufReader,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::net::TcpListener;
 use tokio_rustls::{
     rustls::{Certificate, PrivateKey, ServerConfig},
@@ -23,21 +30,28 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_tls_rustls=debug".into()),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "example_tls_rustls=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     let rustls_config = rustls_server_config(
-        "examples/tls-rustls/self_signed_certs/key.pem",
-        "examples/tls-rustls/self_signed_certs/cert.pem",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("self_signed_certs")
+            .join("key.pem"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("self_signed_certs")
+            .join("cert.pem"),
     );
 
     let acceptor = TlsAcceptor::from(rustls_config);
 
     let listener = TcpListener::bind("127.0.0.1:3000").await.unwrap();
     let mut listener = AddrIncoming::from_listener(listener).unwrap();
+
+    let protocol = Arc::new(Http::new());
 
     let mut app = Router::new()
         .route("/", get(handler))
@@ -51,11 +65,13 @@ async fn main() {
 
         let acceptor = acceptor.clone();
 
-        let app = app.make_service(&stream).await.unwrap();
+        let protocol = protocol.clone();
+
+        let svc = app.make_service(&stream);
 
         tokio::spawn(async move {
             if let Ok(stream) = acceptor.accept(stream).await {
-                let _ = Http::new().serve_connection(stream, app).await;
+                let _ = protocol.serve_connection(stream, svc.await.unwrap()).await;
             }
         });
     }
@@ -65,7 +81,7 @@ async fn handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> String {
     addr.to_string()
 }
 
-fn rustls_server_config(key: &str, cert: &str) -> Arc<ServerConfig> {
+fn rustls_server_config(key: impl AsRef<Path>, cert: impl AsRef<Path>) -> Arc<ServerConfig> {
     let mut key_reader = BufReader::new(File::open(key).unwrap());
     let mut cert_reader = BufReader::new(File::open(cert).unwrap());
 

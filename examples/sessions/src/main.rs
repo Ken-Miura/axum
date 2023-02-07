@@ -1,22 +1,23 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-sessions
+//! cd examples && cargo run -p example-sessions
 //! ```
 
 use async_session::{MemoryStore, Session, SessionStore as _};
 use axum::{
     async_trait,
-    extract::{Extension, FromRequest, RequestParts, TypedHeader},
+    extract::{FromRef, FromRequestParts, TypedHeader},
     headers::Cookie,
     http::{
         self,
         header::{HeaderMap, HeaderValue},
+        request::Parts,
         StatusCode,
     },
     response::IntoResponse,
     routing::get,
-    Router,
+    RequestPartsExt, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -29,18 +30,17 @@ const AXUM_SESSION_COOKIE_NAME: &str = "axum_session";
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_sessions=debug".into()),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "example_sessions=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     // `MemoryStore` just used as an example. Don't use this in production.
     let store = MemoryStore::new();
 
-    let app = Router::new()
-        .route("/", get(handler))
-        .layer(Extension(store));
+    let app = Router::new().route("/", get(handler)).with_state(store);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::debug!("listening on {}", addr);
@@ -82,20 +82,17 @@ enum UserIdFromSession {
 }
 
 #[async_trait]
-impl<B> FromRequest<B> for UserIdFromSession
+impl<S> FromRequestParts<S> for UserIdFromSession
 where
-    B: Send,
+    MemoryStore: FromRef<S>,
+    S: Send + Sync,
 {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let Extension(store) = Extension::<MemoryStore>::from_request(req)
-            .await
-            .expect("`MemoryStore` extension missing");
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let store = MemoryStore::from_ref(state);
 
-        let cookie = Option::<TypedHeader<Cookie>>::from_request(req)
-            .await
-            .unwrap();
+        let cookie: Option<TypedHeader<Cookie>> = parts.extract().await.unwrap();
 
         let session_cookie = cookie
             .as_ref()

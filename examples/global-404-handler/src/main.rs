@@ -1,11 +1,10 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-global-404-handler
+//! cd examples && cargo run -p example-global-404-handler
 //! ```
 
 use axum::{
-    handler::Handler,
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
@@ -17,9 +16,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_global_404_handler=debug".into()),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "example_global_404_handler=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -27,7 +27,7 @@ async fn main() {
     let app = Router::new().route("/", get(handler));
 
     // add a fallback service for handling routes to unknown paths
-    let app = app.fallback(handler_404.into_service());
+    let app = app.fallback(handler_404);
 
     // run it
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));

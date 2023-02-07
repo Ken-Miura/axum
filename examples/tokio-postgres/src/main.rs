@@ -1,13 +1,13 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-tokio-postgres
+//! cd examples && cargo run -p example-tokio-postgres
 //! ```
 
 use axum::{
     async_trait,
-    extract::{Extension, FromRequest, RequestParts},
-    http::StatusCode,
+    extract::{FromRef, FromRequestParts, State},
+    http::{request::Parts, StatusCode},
     routing::get,
     Router,
 };
@@ -20,13 +20,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "example_tokio_postgres=debug".into()),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "example_tokio_postgres=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // setup connection pool
+    // set up connection pool
     let manager =
         PostgresConnectionManager::new_from_stringlike("host=localhost user=postgres", NoTls)
             .unwrap();
@@ -38,7 +39,7 @@ async fn main() {
             "/",
             get(using_connection_pool_extractor).post(using_connection_extractor),
         )
-        .layer(Extension(pool));
+        .with_state(pool);
 
     // run it with hyper
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -51,9 +52,8 @@ async fn main() {
 
 type ConnectionPool = Pool<PostgresConnectionManager<NoTls>>;
 
-// we can exact the connection pool with `Extension`
 async fn using_connection_pool_extractor(
-    Extension(pool): Extension<ConnectionPool>,
+    State(pool): State<ConnectionPool>,
 ) -> Result<String, (StatusCode, String)> {
     let conn = pool.get().await.map_err(internal_error)?;
 
@@ -71,16 +71,15 @@ async fn using_connection_pool_extractor(
 struct DatabaseConnection(PooledConnection<'static, PostgresConnectionManager<NoTls>>);
 
 #[async_trait]
-impl<B> FromRequest<B> for DatabaseConnection
+impl<S> FromRequestParts<S> for DatabaseConnection
 where
-    B: Send,
+    ConnectionPool: FromRef<S>,
+    S: Send + Sync,
 {
     type Rejection = (StatusCode, String);
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let Extension(pool) = Extension::<ConnectionPool>::from_request(req)
-            .await
-            .map_err(internal_error)?;
+    async fn from_request_parts(_parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let pool = ConnectionPool::from_ref(state);
 
         let conn = pool.get_owned().await.map_err(internal_error)?;
 

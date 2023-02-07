@@ -24,7 +24,7 @@ macro_rules! opaque_future {
 
         impl<$($param),*> std::fmt::Debug for $name<$($param),*> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_tuple(stringify!($name)).field(&format_args!("...")).finish()
+                f.debug_struct(stringify!($name)).finish_non_exhaustive()
             }
         }
 
@@ -59,7 +59,19 @@ macro_rules! define_rejection {
 
         impl $crate::response::IntoResponse for $name {
             fn into_response(self) -> $crate::response::Response {
-                (http::StatusCode::$status, $body).into_response()
+                (self.status(), $body).into_response()
+            }
+        }
+
+        impl $name {
+            /// Get the response body text used for this rejection.
+            pub fn body_text(&self) -> String {
+                $body.into()
+            }
+
+            /// Get the status code used for this rejection.
+            pub fn status(&self) -> http::StatusCode {
+                http::StatusCode::$status
             }
         }
 
@@ -99,10 +111,19 @@ macro_rules! define_rejection {
 
         impl crate::response::IntoResponse for $name {
             fn into_response(self) -> $crate::response::Response {
-                (
-                    http::StatusCode::$status,
-                    format!(concat!($body, ": {}"), self.0),
-                ).into_response()
+                (self.status(), self.body_text()).into_response()
+            }
+        }
+
+        impl $name {
+            /// Get the response body text used for this rejection.
+            pub fn body_text(&self) -> String {
+                format!(concat!($body, ": {}"), self.0).into()
+            }
+
+            /// Get the status code used for this rejection.
+            pub fn status(&self) -> http::StatusCode {
+                http::StatusCode::$status
             }
         }
 
@@ -148,6 +169,26 @@ macro_rules! composite_rejection {
             }
         }
 
+        impl $name {
+            /// Get the response body text used for this rejection.
+            pub fn body_text(&self) -> String {
+                match self {
+                    $(
+                        Self::$variant(inner) => inner.body_text(),
+                    )+
+                }
+            }
+
+            /// Get the status code used for this rejection.
+            pub fn status(&self) -> http::StatusCode {
+                match self {
+                    $(
+                        Self::$variant(inner) => inner.status(),
+                    )+
+                }
+            }
+        }
+
         $(
             impl From<$variant> for $name {
                 fn from(inner: $variant) -> Self {
@@ -178,23 +219,24 @@ macro_rules! composite_rejection {
     };
 }
 
+#[rustfmt::skip]
 macro_rules! all_the_tuples {
     ($name:ident) => {
-        $name!(T1);
-        $name!(T1, T2);
-        $name!(T1, T2, T3);
-        $name!(T1, T2, T3, T4);
-        $name!(T1, T2, T3, T4, T5);
-        $name!(T1, T2, T3, T4, T5, T6);
-        $name!(T1, T2, T3, T4, T5, T6, T7);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
-        $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+        $name!([], T1);
+        $name!([T1], T2);
+        $name!([T1, T2], T3);
+        $name!([T1, T2, T3], T4);
+        $name!([T1, T2, T3, T4], T5);
+        $name!([T1, T2, T3, T4, T5], T6);
+        $name!([T1, T2, T3, T4, T5, T6], T7);
+        $name!([T1, T2, T3, T4, T5, T6, T7], T8);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8], T9);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9], T10);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9, T10], T11);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11], T12);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12], T13);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13], T14);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14], T15);
+        $name!([T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15], T16);
     };
 }

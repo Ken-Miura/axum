@@ -3,10 +3,7 @@ use http::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Extensions, StatusCode,
 };
-use std::{
-    convert::{Infallible, TryInto},
-    fmt,
-};
+use std::{convert::Infallible, fmt};
 
 /// Trait for adding headers and extensions to a response.
 ///
@@ -57,7 +54,10 @@ use std::{
 /// }
 ///
 /// // We can now return `SetHeader` in responses
-/// async fn handler() -> impl IntoResponse {
+/// //
+/// // Note that returning `impl IntoResponse` might be easier if the response has many parts to
+/// // it. The return type is written out here for clarity.
+/// async fn handler() -> (SetHeader<'static>, SetHeader<'static>, &'static str) {
 ///     (
 ///         SetHeader("server", "axum"),
 ///         SetHeader("x-foo", "custom"),
@@ -66,7 +66,7 @@ use std::{
 /// }
 ///
 /// // Or on its own as the whole response
-/// async fn other_handler() -> impl IntoResponse {
+/// async fn other_handler() -> SetHeader<'static> {
 ///     SetHeader("x-foo", "custom")
 /// }
 /// ```
@@ -248,4 +248,13 @@ macro_rules! impl_into_response_parts {
     }
 }
 
-all_the_tuples!(impl_into_response_parts);
+all_the_tuples_no_last_special_case!(impl_into_response_parts);
+
+impl IntoResponseParts for Extensions {
+    type Error = Infallible;
+
+    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        res.extensions_mut().extend(self);
+        Ok(res)
+    }
+}

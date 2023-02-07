@@ -28,22 +28,22 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG")
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "example_http_proxy=trace,tower_http=debug".into()),
-        ))
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let router = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     let service = tower::service_fn(move |req: Request<Body>| {
-        let router = router.clone();
+        let router_svc = router_svc.clone();
         async move {
             if req.method() == Method::CONNECT {
                 proxy(req).await
             } else {
-                router.oneshot(req).await.map_err(|err| match err {})
+                router_svc.oneshot(req).await.map_err(|err| match err {})
             }
         }
     });

@@ -1,7 +1,7 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-unix-domain-socket
+//! cd examples && cargo run -p example-unix-domain-socket
 //! ```
 
 #[cfg(unix)]
@@ -45,9 +45,10 @@ mod unix {
 
     pub async fn server() {
         tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new(
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "debug".into()),
-            ))
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "debug".into()),
+            )
             .with(tracing_subscriber::fmt::layer())
             .init();
 

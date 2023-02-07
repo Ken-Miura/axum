@@ -1,13 +1,13 @@
 //! Run with
 //!
 //! ```not_rust
-//! cargo run -p example-customize-path-rejection
+//! cd examples && cargo run -p example-customize-path-rejection
 //! ```
 
 use axum::{
     async_trait,
-    extract::{path::ErrorKind, rejection::PathRejection, FromRequest, RequestParts},
-    http::StatusCode,
+    extract::{path::ErrorKind, rejection::PathRejection, FromRequestParts},
+    http::{request::Parts, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
@@ -19,10 +19,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG")
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "example_customize_path_rejection=debug".into()),
-        ))
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -52,16 +52,16 @@ struct Params {
 struct Path<T>(T);
 
 #[async_trait]
-impl<B, T> FromRequest<B> for Path<T>
+impl<S, T> FromRequestParts<S> for Path<T>
 where
     // these trait bounds are copied from `impl FromRequest for axum::extract::path::Path`
     T: DeserializeOwned + Send,
-    B: Send,
+    S: Send + Sync,
 {
     type Rejection = (StatusCode, axum::Json<PathError>);
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        match axum::extract::Path::<T>::from_request(req).await {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
             Ok(value) => Ok(Self(value.0)),
             Err(rejection) => {
                 let (status, body) = match rejection {

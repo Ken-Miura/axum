@@ -4,9 +4,10 @@
 //!
 //! [`Router::into_make_service_with_connect_info`]: crate::routing::Router::into_make_service_with_connect_info
 
-use super::{Extension, FromRequest, RequestParts};
+use super::{Extension, FromRequestParts};
 use crate::middleware::AddExtension;
 use async_trait::async_trait;
+use http::request::Parts;
 use hyper::server::conn::AddrStream;
 use std::{
     convert::Infallible,
@@ -128,15 +129,15 @@ opaque_future! {
 pub struct ConnectInfo<T>(pub T);
 
 #[async_trait]
-impl<B, T> FromRequest<B> for ConnectInfo<T>
+impl<S, T> FromRequestParts<S> for ConnectInfo<T>
 where
-    B: Send,
+    S: Send + Sync,
     T: Clone + Send + Sync + 'static,
 {
-    type Rejection = <Extension<Self> as FromRequest<B>>::Rejection;
+    type Rejection = <Extension<Self> as FromRequestParts<S>>::Rejection;
 
-    async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-        let Extension(connect_info) = Extension::<Self>::from_request(req).await?;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Extension(connect_info) = Extension::<Self>::from_request_parts(parts, state).await?;
         Ok(connect_info)
     }
 }
@@ -147,10 +148,10 @@ mod tests {
     use crate::{routing::get, Router, Server};
     use std::net::{SocketAddr, TcpListener};
 
-    #[tokio::test]
+    #[crate::test]
     async fn socket_addr() {
         async fn handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> String {
-            format!("{}", addr)
+            format!("{addr}")
         }
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -169,12 +170,12 @@ mod tests {
 
         let client = reqwest::Client::new();
 
-        let res = client.get(format!("http://{}", addr)).send().await.unwrap();
+        let res = client.get(format!("http://{addr}")).send().await.unwrap();
         let body = res.text().await.unwrap();
         assert!(body.starts_with("127.0.0.1:"));
     }
 
-    #[tokio::test]
+    #[crate::test]
     async fn custom() {
         #[derive(Clone, Debug)]
         struct MyConnectInfo {
@@ -209,7 +210,7 @@ mod tests {
 
         let client = reqwest::Client::new();
 
-        let res = client.get(format!("http://{}", addr)).send().await.unwrap();
+        let res = client.get(format!("http://{addr}")).send().await.unwrap();
         let body = res.text().await.unwrap();
         assert_eq!(body, "it worked!");
     }
