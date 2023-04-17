@@ -23,14 +23,13 @@ use tokio_tungstenite::{
 };
 
 const N_CLIENTS: usize = 2; //set to desired number
-const SERVER: &'static str = "ws://127.0.0.1:3000/ws";
+const SERVER: &str = "ws://127.0.0.1:3000/ws";
 
 #[tokio::main]
 async fn main() {
     let start_time = Instant::now();
     //spawn several clients that will concurrently talk to the server
     let mut clients = (0..N_CLIENTS)
-        .into_iter()
         .map(|cli| tokio::spawn(spawn_client(cli)))
         .collect::<FuturesUnordered<_>>();
 

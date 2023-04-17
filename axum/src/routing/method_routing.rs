@@ -1,6 +1,6 @@
 //! Route to services and handlers based on HTTP methods.
 
-use super::IntoMakeService;
+use super::{future::InfallibleRouteFuture, IntoMakeService};
 #[cfg(feature = "tokio")]
 use crate::extract::connect_info::IntoMakeServiceWithConnectInfo;
 use crate::{
@@ -513,6 +513,7 @@ where
 ///     S: Service<Request<Body>>,
 /// {}
 /// ```
+#[must_use]
 pub struct MethodRouter<S = (), B = Body, E = Infallible> {
     get: MethodEndpoint<S, B, E>,
     head: MethodEndpoint<S, B, E>,
@@ -734,14 +735,14 @@ where
     /// Provide the state for the router.
     pub fn with_state<S2>(self, state: S) -> MethodRouter<S2, B, E> {
         MethodRouter {
-            get: self.get.with_state(state.clone()),
-            head: self.head.with_state(state.clone()),
-            delete: self.delete.with_state(state.clone()),
-            options: self.options.with_state(state.clone()),
-            patch: self.patch.with_state(state.clone()),
-            post: self.post.with_state(state.clone()),
-            put: self.put.with_state(state.clone()),
-            trace: self.trace.with_state(state.clone()),
+            get: self.get.with_state(&state),
+            head: self.head.with_state(&state),
+            delete: self.delete.with_state(&state),
+            options: self.options.with_state(&state),
+            patch: self.patch.with_state(&state),
+            post: self.post.with_state(&state),
+            put: self.put.with_state(&state),
+            trace: self.trace.with_state(&state),
             allow_header: self.allow_header,
             fallback: self.fallback.with_state(state),
         }
@@ -1217,12 +1218,12 @@ where
         }
     }
 
-    fn with_state<S2>(self, state: S) -> MethodEndpoint<S2, B, E> {
+    fn with_state<S2>(self, state: &S) -> MethodEndpoint<S2, B, E> {
         match self {
             MethodEndpoint::None => MethodEndpoint::None,
             MethodEndpoint::Route(route) => MethodEndpoint::Route(route),
             MethodEndpoint::BoxedHandler(handler) => {
-                MethodEndpoint::Route(handler.into_route(state))
+                MethodEndpoint::Route(handler.into_route(state.clone()))
             }
         }
     }
@@ -1267,6 +1268,18 @@ where
     }
 }
 
+impl<S, B> Handler<(), S, B> for MethodRouter<S, B>
+where
+    S: Clone + 'static,
+    B: HttpBody + Send + 'static,
+{
+    type Future = InfallibleRouteFuture<B>;
+
+    fn call(mut self, req: Request<B>, state: S) -> Self::Future {
+        InfallibleRouteFuture::new(self.call_with_state(req, state))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,7 +1291,7 @@ mod tests {
     use http::{header::ALLOW, HeaderMap};
     use std::time::Duration;
     use tower::{timeout::TimeoutLayer, Service, ServiceBuilder, ServiceExt};
-    use tower_http::{auth::RequireAuthorizationLayer, services::fs::ServeDir};
+    use tower_http::{services::fs::ServeDir, validate_request::ValidateRequestHeaderLayer};
 
     #[crate::test]
     async fn method_not_allowed_by_default() {
@@ -1340,7 +1353,7 @@ mod tests {
     async fn layer() {
         let mut svc = MethodRouter::new()
             .get(|| async { std::future::pending::<()>().await })
-            .layer(RequireAuthorizationLayer::bearer("password"));
+            .layer(ValidateRequestHeaderLayer::bearer("password"));
 
         // method with route
         let (status, _, _) = call(Method::GET, &mut svc).await;
@@ -1355,7 +1368,7 @@ mod tests {
     async fn route_layer() {
         let mut svc = MethodRouter::new()
             .get(|| async { std::future::pending::<()>().await })
-            .route_layer(RequireAuthorizationLayer::bearer("password"));
+            .route_layer(ValidateRequestHeaderLayer::bearer("password"));
 
         // method with route
         let (status, _, _) = call(Method::GET, &mut svc).await;
@@ -1373,11 +1386,8 @@ mod tests {
             // use the all the things :bomb:
             get(ok)
                 .post(ok)
-                .route_layer(RequireAuthorizationLayer::bearer("password"))
-                .merge(
-                    delete_service(ServeDir::new("."))
-                        .handle_error(|_| async { StatusCode::NOT_FOUND }),
-                )
+                .route_layer(ValidateRequestHeaderLayer::bearer("password"))
+                .merge(delete_service(ServeDir::new(".")))
                 .fallback(|| async { StatusCode::NOT_FOUND })
                 .put(ok)
                 .layer(
@@ -1473,6 +1483,17 @@ mod tests {
         let (status, headers, _) = call(Method::DELETE, &mut svc).await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(headers[ALLOW], "GET,POST");
+    }
+
+    #[crate::test]
+    async fn allow_header_noop_middleware() {
+        let mut svc = MethodRouter::new()
+            .get(ok)
+            .layer(tower::layer::util::Identity::new());
+
+        let (status, headers, _) = call(Method::DELETE, &mut svc).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(headers[ALLOW], "GET,HEAD");
     }
 
     #[crate::test]

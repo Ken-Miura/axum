@@ -9,6 +9,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - None.
 
+# 0.6.15 (12. April, 2023)
+
+- **fixed:** Removed additional leftover debug messages ([#1927])
+
+[#1927]: https://github.com/tokio-rs/axum/pull/1927
+
+# 0.6.14 (11. April, 2023)
+
+- **fixed:** Removed leftover "path_router hit" debug message ([#1925])
+
+[#1925]: https://github.com/tokio-rs/axum/pull/1925
+
+# 0.6.13 (11. April, 2023)
+
+- **added:** Log rejections from built-in extractors with the
+  `axum::rejection=trace` target ([#1890])
+- **fixed:** Fixed performance regression with `Router::nest` introduced in
+  0.6.0. `nest` now flattens the routes which performs better ([#1711])
+- **fixed:** Extracting `MatchedPath` in nested handlers now gives the full
+  matched path, including the nested path ([#1711])
+- **added:** Implement `Deref` and `DerefMut` for built-in extractors ([#1922])
+
+[#1711]: https://github.com/tokio-rs/axum/pull/1711
+[#1890]: https://github.com/tokio-rs/axum/pull/1890
+[#1922]: https://github.com/tokio-rs/axum/pull/1922
+
+# 0.6.12 (22. March, 2023)
+
+- **added:** Implement `IntoResponse` for `MultipartError` ([#1861])
+- **fixed:** More clearly document what wildcards matches ([#1873])
+
+[#1861]: https://github.com/tokio-rs/axum/pull/1861
+[#1873]: https://github.com/tokio-rs/axum/pull/1873
+
+# 0.6.11 (13. March, 2023)
+
+- **fixed:** Don't require `S: Debug` for `impl Debug for Router<S>` ([#1836])
+- **fixed:** Clone state a bit less when handling requests ([#1837])
+- **fixed:** Unpin itoa dependency ([#1815])
+
+[#1815]: https://github.com/tokio-rs/axum/pull/1815
+[#1836]: https://github.com/tokio-rs/axum/pull/1836
+[#1837]: https://github.com/tokio-rs/axum/pull/1837
+
+# 0.6.10 (03. March, 2023)
+
+- **fixed:** Add `#[must_use]` attributes to types that do nothing unless used ([#1809])
+- **fixed:** Gracefully handle missing headers in the `TypedHeader` extractor ([#1810])
+- **fixed:** Fix routing issues when loading a `Router` via a dynamic library ([#1806])
+
+[#1806]: https://github.com/tokio-rs/axum/pull/1806
+[#1809]: https://github.com/tokio-rs/axum/pull/1809
+[#1810]: https://github.com/tokio-rs/axum/pull/1810
+
+# 0.6.9 (24. February, 2023)
+
+- **changed:** Update to tower-http 0.4. axum is still compatible with tower-http 0.3 ([#1783])
+
+[#1783]: https://github.com/tokio-rs/axum/pull/1783
+
+# 0.6.8 (24. February, 2023)
+
+- **fixed:** Fix `Allow` missing from routers with middleware ([#1773])
+- **added:** Add `KeepAlive::event` for customizing the event sent for SSE keep alive ([#1729])
+
+[#1729]: https://github.com/tokio-rs/axum/pull/1729
+[#1773]: https://github.com/tokio-rs/axum/pull/1773
+
+# 0.6.7 (17. February, 2023)
+
+- **added:** Add `FormRejection::FailedToDeserializeFormBody` which is returned
+  if the request body couldn't be deserialized into the target type, as opposed
+  to `FailedToDeserializeForm` which is only for query parameters ([#1683])
+- **added:** Add `MockConnectInfo` for setting `ConnectInfo` during tests ([#1767])
+
+[#1683]: https://github.com/tokio-rs/axum/pull/1683
+[#1767]: https://github.com/tokio-rs/axum/pull/1767
+
+# 0.6.6 (12. February, 2023)
+
+- **fixed:** Enable passing `MethodRouter` to `Router::fallback` ([#1730])
+
+[#1730]: https://github.com/tokio-rs/axum/pull/1730
+
+# 0.6.5 (11. February, 2023)
+
+- **fixed:** Fix `#[debug_handler]` sometimes giving wrong borrow related suggestions ([#1710])
+- Document gotchas related to using `impl IntoResponse` as the return type from handler functions ([#1736])
+
+[#1710]: https://github.com/tokio-rs/axum/pull/1710
+[#1736]: https://github.com/tokio-rs/axum/pull/1736
+
 # 0.6.4 (22. January, 2023)
 
 - Depend on axum-macros 0.3.2

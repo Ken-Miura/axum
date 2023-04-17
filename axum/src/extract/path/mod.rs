@@ -12,11 +12,7 @@ use async_trait::async_trait;
 use axum_core::response::{IntoResponse, Response};
 use http::{request::Parts, StatusCode};
 use serde::de::DeserializeOwned;
-use std::{
-    fmt,
-    ops::{Deref, DerefMut},
-    sync::Arc,
-};
+use std::{fmt, sync::Arc};
 
 /// Extractor that will get captures from the URL and parse them using
 /// [`serde`].
@@ -152,21 +148,7 @@ use std::{
 #[derive(Debug)]
 pub struct Path<T>(pub T);
 
-impl<T> Deref for Path<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for Path<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+axum_core::__impl_deref!(Path);
 
 #[async_trait]
 impl<T, S> FromRequestParts<S> for Path<T>
@@ -219,7 +201,6 @@ impl PathDeserializationError {
 
     #[track_caller]
     pub(super) fn unsupported_type(name: &'static str) -> Self {
-        println!("{}", std::panic::Location::caller());
         Self::new(ErrorKind::UnsupportedType { name })
     }
 }
@@ -266,7 +247,8 @@ impl std::error::Error for PathDeserializationError {}
 
 /// The kinds of errors that can happen we deserializing into a [`Path`].
 ///
-/// This type is obtained through [`FailedToDeserializePathParams::into_kind`] and is useful for building
+/// This type is obtained through [`FailedToDeserializePathParams::kind`] or
+/// [`FailedToDeserializePathParams::into_kind`] and is useful for building
 /// more precise error messages.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -380,6 +362,11 @@ impl fmt::Display for ErrorKind {
 pub struct FailedToDeserializePathParams(PathDeserializationError);
 
 impl FailedToDeserializePathParams {
+    /// Get a reference to the underlying error kind.
+    pub fn kind(&self) -> &ErrorKind {
+        &self.0.kind
+    }
+
     /// Convert this error into the underlying error kind.
     pub fn into_kind(self) -> ErrorKind {
         self.0.kind
@@ -416,6 +403,11 @@ impl FailedToDeserializePathParams {
 
 impl IntoResponse for FailedToDeserializePathParams {
     fn into_response(self) -> Response {
+        axum_core::__log_rejection!(
+            rejection_type = Self,
+            body_text = self.body_text(),
+            status = self.status(),
+        );
         (self.status(), self.body_text()).into_response()
     }
 }

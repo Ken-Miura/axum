@@ -1,5 +1,8 @@
 //! Rejection response types.
 
+use crate::__composite_rejection as composite_rejection;
+use crate::__define_rejection as define_rejection;
+
 use crate::BoxError;
 
 composite_rejection! {
@@ -30,8 +33,6 @@ define_rejection! {
     ///
     /// This can  _only_ happen when you're using [`tower_http::limit::RequestBodyLimitLayer`] or
     /// otherwise wrapping request bodies in [`http_body::Limited`].
-    ///
-    /// [`tower_http::limit::RequestBodyLimitLayer`]: https://docs.rs/tower-http/0.3/tower_http/limit/struct.RequestBodyLimitLayer.html
     pub struct LengthLimitError(Error);
 }
 

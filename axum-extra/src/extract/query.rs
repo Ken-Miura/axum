@@ -6,7 +6,7 @@ use axum::{
 };
 use http::{request::Parts, StatusCode};
 use serde::de::DeserializeOwned;
-use std::{fmt, ops::Deref};
+use std::fmt;
 
 /// Extractor that deserializes query strings into some type.
 ///
@@ -46,8 +46,8 @@ use std::{fmt, ops::Deref};
 /// # };
 /// ```
 ///
-/// If the query string cannot be parsed it will reject the request with a `422
-/// Unprocessable Entity` response.
+/// If the query string cannot be parsed it will reject the request with a `400
+/// Bad Request` response.
 ///
 /// For handling values being empty vs missing see the [query-params-with-empty-strings][example]
 /// example.
@@ -73,13 +73,7 @@ where
     }
 }
 
-impl<T> Deref for Query<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+axum_core::__impl_deref!(Query);
 
 /// Rejection used for [`Query`].
 ///

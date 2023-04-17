@@ -10,7 +10,7 @@
 //! };
 //! use std::{time::Duration, convert::Infallible};
 //! use tokio_stream::StreamExt as _ ;
-//! use futures::stream::{self, Stream};
+//! use futures_util::stream::{self, Stream};
 //!
 //! let app = Router::new().route("/sse", get(sse_handler));
 //!
@@ -53,6 +53,7 @@ use tokio::time::Sleep;
 
 /// An SSE response
 #[derive(Clone)]
+#[must_use]
 pub struct Sse<S> {
     stream: S,
     keep_alive: Option<KeepAlive>,
@@ -163,6 +164,7 @@ where
 
 /// Server-sent event
 #[derive(Debug, Default, Clone)]
+#[must_use]
 pub struct Event {
     buffer: BytesMut,
     flags: EventFlags,
@@ -383,6 +385,7 @@ bitflags::bitflags! {
 /// Configure the interval between keep-alive messages, the content
 /// of each message, and the associated stream.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct KeepAlive {
     event: Bytes,
     max_interval: Duration,
@@ -409,16 +412,27 @@ impl KeepAlive {
     ///
     /// Default is an empty comment.
     ///
-    ///
     /// # Panics
     ///
     /// Panics if `text` contains any newline or carriage returns, as they are not allowed in SSE
     /// comments.
-    pub fn text<I>(mut self, text: I) -> Self
+    pub fn text<I>(self, text: I) -> Self
     where
         I: AsRef<str>,
     {
-        self.event = Event::default().comment(text).finalize();
+        self.event(Event::default().comment(text))
+    }
+
+    /// Customize the event of the keep-alive message.
+    ///
+    /// Default is an empty comment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `event` contains any newline or carriage returns, as they are not allowed in SSE
+    /// comments.
+    pub fn event(mut self, event: Event) -> Self {
+        self.event = event.finalize();
         self
     }
 }
@@ -495,7 +509,7 @@ impl<'a> Iterator for MemchrSplit<'a> {
 mod tests {
     use super::*;
     use crate::{routing::get, test_helpers::*, Router};
-    use futures::stream;
+    use futures_util::stream;
     use std::{collections::HashMap, convert::Infallible};
     use tokio_stream::StreamExt as _;
 

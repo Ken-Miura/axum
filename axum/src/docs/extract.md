@@ -15,6 +15,7 @@ Types and traits for extracting data from requests.
 - [Request body extractors](#request-body-extractors)
 - [Running extractors from middleware](#running-extractors-from-middleware)
 - [Wrapping extractors](#wrapping-extractors)
+- [Logging rejections](#logging-rejections)
 
 # Intro
 
@@ -162,26 +163,32 @@ left to right.
 
 The request body is an asynchronous stream that can only be consumed once.
 Therefore you can only have one extractor that consumes the request body. axum
-enforces by that requiring such extractors to be the _last_ argument your
+enforces this by requiring such extractors to be the _last_ argument your
 handler takes.
 
 For example
 
 ```rust
-use axum::http::{Method, HeaderMap};
+use axum::{extract::State, http::{Method, HeaderMap}};
+#
+# #[derive(Clone)]
+# struct AppState {
+# }
 
 async fn handler(
     // `Method` and `HeaderMap` don't consume the request body so they can
-    // put anywhere in the argument list
+    // put anywhere in the argument list (but before `body`)
     method: Method,
     headers: HeaderMap,
+    // `State` is also an extractor so it needs to be before `body`
+    State(state): State<AppState>,
     // `String` consumes the request body and thus must be the last extractor
     body: String,
 ) {
     // ...
 }
 #
-# let _: axum::routing::MethodRouter = axum::routing::get(handler);
+# let _: axum::routing::MethodRouter<AppState, String> = axum::routing::get(handler);
 ```
 
 We get a compile error if `String` isn't the last extractor:
@@ -826,6 +833,13 @@ async fn handler(
 ) {}
 # let _: axum::routing::MethodRouter = axum::routing::get(handler);
 ```
+
+# Logging rejections
+
+All built-in extractors will log rejections for easier debugging. To see the
+logs, enable the `tracing` feature for axum and the `axum::rejection=trace`
+tracing target, for example with `RUST_LOG=info,axum::rejection=trace cargo
+run`.
 
 [`body::Body`]: crate::body::Body
 [`Bytes`]: crate::body::Bytes

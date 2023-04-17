@@ -40,28 +40,28 @@
 //!
 //! ```
 //! use axum::{
-//!     extract::ws::{WebSocketUpgrade, WebSocket},
+//!     extract::{ws::{WebSocketUpgrade, WebSocket}, State},
 //!     response::Response,
 //!     routing::get,
-//!     Extension, Router,
+//!     Router,
 //! };
 //!
 //! #[derive(Clone)]
-//! struct State {
+//! struct AppState {
 //!     // ...
 //! }
 //!
-//! async fn handler(ws: WebSocketUpgrade, Extension(state): Extension<State>) -> Response {
+//! async fn handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
 //!     ws.on_upgrade(|socket| handle_socket(socket, state))
 //! }
 //!
-//! async fn handle_socket(socket: WebSocket, state: State) {
+//! async fn handle_socket(socket: WebSocket, state: AppState) {
 //!     // ...
 //! }
 //!
 //! let app = Router::new()
 //!     .route("/ws", get(handler))
-//!     .layer(Extension(State { /* ... */ }));
+//!     .with_state(AppState { /* ... */ });
 //! # async {
 //! # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
 //! # };
@@ -74,7 +74,7 @@
 //!
 //! ```rust,no_run
 //! use axum::{Error, extract::ws::{WebSocket, Message}};
-//! use futures::{sink::SinkExt, stream::{StreamExt, SplitSink, SplitStream}};
+//! use futures_util::{sink::SinkExt, stream::{StreamExt, SplitSink, SplitStream}};
 //!
 //! async fn handle_socket(mut socket: WebSocket) {
 //!     let (mut sender, mut receiver) = socket.split();
@@ -282,10 +282,7 @@ impl<F> WebSocketUpgrade<F> {
 
     /// Finalize upgrading the connection and call the provided callback with
     /// the stream.
-    ///
-    /// When using `WebSocketUpgrade`, the response produced by this method
-    /// should be returned from the handler. See the [module docs](self) for an
-    /// example.
+    #[must_use = "to setup the WebSocket connection, this response must be returned"]
     pub fn on_upgrade<C, Fut>(self, callback: C) -> Response
     where
         C: FnOnce(WebSocket) -> Fut + Send + 'static,
@@ -438,6 +435,8 @@ fn header_contains(headers: &HeaderMap, key: HeaderName, value: &'static str) ->
 }
 
 /// A stream of WebSocket messages.
+///
+/// See [the module level documentation](self) for more details.
 #[derive(Debug)]
 pub struct WebSocket {
     inner: WebSocketStream<Upgraded>,
@@ -670,15 +669,20 @@ impl From<Message> for Vec<u8> {
 }
 
 fn sign(key: &[u8]) -> HeaderValue {
+    use base64::engine::Engine as _;
+
     let mut sha1 = Sha1::default();
     sha1.update(key);
     sha1.update(&b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"[..]);
-    let b64 = Bytes::from(base64::encode(sha1.finalize()));
+    let b64 = Bytes::from(base64::engine::general_purpose::STANDARD.encode(sha1.finalize()));
     HeaderValue::from_maybe_shared(b64).expect("base64 is a valid value")
 }
 
 pub mod rejection {
     //! WebSocket specific rejections.
+
+    use axum_core::__composite_rejection as composite_rejection;
+    use axum_core::__define_rejection as define_rejection;
 
     define_rejection! {
         #[status = METHOD_NOT_ALLOWED]

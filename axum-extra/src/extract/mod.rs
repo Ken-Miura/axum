@@ -1,6 +1,8 @@
 //! Additional extractors.
 
 mod cached;
+mod optional_path;
+mod with_rejection;
 
 #[cfg(feature = "form")]
 mod form;
@@ -11,9 +13,10 @@ pub mod cookie;
 #[cfg(feature = "query")]
 mod query;
 
-mod with_rejection;
+#[cfg(feature = "multipart")]
+pub mod multipart;
 
-pub use self::cached::Cached;
+pub use self::{cached::Cached, optional_path::OptionalPath, with_rejection::WithRejection};
 
 #[cfg(feature = "cookie")]
 pub use self::cookie::CookieJar;
@@ -30,8 +33,9 @@ pub use self::form::{Form, FormRejection};
 #[cfg(feature = "query")]
 pub use self::query::{Query, QueryRejection};
 
+#[cfg(feature = "multipart")]
+pub use self::multipart::Multipart;
+
 #[cfg(feature = "json-lines")]
 #[doc(no_inline)]
 pub use crate::json_lines::JsonLines;
-
-pub use self::with_rejection::WithRejection;

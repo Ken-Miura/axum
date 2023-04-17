@@ -358,6 +358,7 @@
 //! `original-uri` | Enables capturing of every request's original URI and the [`OriginalUri`] extractor | Yes
 //! `tokio` | Enables `tokio` as a dependency and `axum::Server`, `SSE` and `extract::connect_info` types. | Yes
 //! `tower-log` | Enables `tower`'s `log` feature | Yes
+//! `tracing` | Log rejections from built-in extractors | No
 //! `ws` | Enables WebSockets support via [`extract::ws`] | No
 //! `form` | Enables the `Form` extractor | Yes
 //! `query` | Enables the `Query` extractor | Yes
@@ -398,7 +399,6 @@
 
 #![warn(
     clippy::all,
-    clippy::dbg_macro,
     clippy::todo,
     clippy::empty_enum,
     clippy::enum_glob_use,
@@ -436,6 +436,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 #[macro_use]
 pub(crate) mod macros;

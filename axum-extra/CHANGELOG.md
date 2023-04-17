@@ -9,6 +9,79 @@ and this project adheres to [Semantic Versioning].
 
 - None.
 
+# 0.7.3 (11. April, 2023)
+
+- **added:** Implement `Deref` and `DerefMut` for built-in extractors ([#1922])
+- **added:** Add `OptionalPath` extractor ([#1889])
+
+[#1889]: https://github.com/tokio-rs/axum/pull/1889
+[#1922]: https://github.com/tokio-rs/axum/pull/1922
+
+# 0.7.2 (22. March, 2023)
+
+- **added:** Implement `IntoResponse` for `MultipartError` ([#1861])
+
+[#1861]: https://github.com/tokio-rs/axum/pull/1861
+
+# 0.7.1 (13. March, 2023)
+
+- Updated to latest `axum-macros`
+
+# 0.7.0 (03. March, 2023)
+
+- **breaking:** Remove the `spa` feature which should have been removed in 0.6.0 ([#1802])
+- **added:** Add `Multipart`. This is similar to `axum::extract::Multipart`
+  except that it enforces field exclusivity at runtime instead of compile time,
+  as this improves usability ([#1692])
+- **added:** Implement `Clone` for `CookieJar`, `PrivateCookieJar` and `SignedCookieJar` ([#1808])
+- **fixed:** Add `#[must_use]` attributes to types that do nothing unless used ([#1809])
+
+[#1692]: https://github.com/tokio-rs/axum/pull/1692
+[#1802]: https://github.com/tokio-rs/axum/pull/1802
+[#1808]: https://github.com/tokio-rs/axum/pull/1808
+[#1809]: https://github.com/tokio-rs/axum/pull/1809
+
+# 0.6.0 (24. February, 2022)
+
+- **breaking:**  Change casing of `ProtoBuf` to `Protobuf` ([#1595])
+- **breaking:** `SpaRouter` has been removed. Use `ServeDir` and `ServeFile`
+  from `tower-http` instead:
+
+  ```rust
+  // before
+  Router::new().merge(SpaRouter::new("/assets", "dist"));
+
+  // with ServeDir
+  Router::new().nest_service("/assets", ServeDir::new("dist"));
+
+  // before with `index_file`
+  Router::new().merge(SpaRouter::new("/assets", "dist").index_file("index.html"));
+
+  // with ServeDir + ServeFile
+  Router::new().nest_service(
+      "/assets",
+      ServeDir::new("dist").not_found_service(ServeFile::new("dist/index.html")),
+  );
+  ```
+
+  See the [static-file-server-example] for more examples ([#1784])
+
+[#1595]: https://github.com/tokio-rs/axum/pull/1595
+[#1784]: https://github.com/tokio-rs/axum/pull/1784
+[static-file-server-example]: https://github.com/tokio-rs/axum/blob/main/examples/static-file-server/src/main.rs
+
+# 0.5.0 (12. February, 2022)
+
+- **added:** Add `option_layer` for converting an `Option<Layer>` into a `Layer` ([#1696])
+- **added:** Implement `Layer` and `Service` for `Either` ([#1696])
+- **added:** Add `TypedPath::with_query_params` ([#1744])
+- **breaking:** Update to [`cookie`] 0.17 ([#1747])
+
+[#1696]: https://github.com/tokio-rs/axum/pull/1696
+[#1744]: https://github.com/tokio-rs/axum/pull/1744
+[#1747]: https://github.com/tokio-rs/axum/pull/1747
+[`cookie`]: https://crates.io/crates/cookie
+
 # 0.4.2 (02. December, 2022)
 
 - **fixed:** Bug fixes for `RouterExt:{route_with_tsr, route_service_with_tsr}` ([#1608]):

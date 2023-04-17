@@ -17,9 +17,9 @@
 //! `erased-json` | Enables the `ErasedJson` response | No
 //! `form` | Enables the `Form` extractor | No
 //! `json-lines` | Enables the `JsonLines` extractor and response | No
-//! `protobuf` | Enables the `ProtoBuf` extractor and response | No
+//! `multipart` | Enables the `Multpart` extractor | No
+//! `protobuf` | Enables the `Protobuf` extractor and response | No
 //! `query` | Enables the `Query` extractor | No
-//! `spa` | Enables the `Spa` router | No
 //! `typed-routing` | Enables the `TypedPath` routing utilities | No
 //!
 //! [`axum`]: https://crates.io/crates/axum
@@ -64,11 +64,16 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+
+#[allow(unused_extern_crates)]
+extern crate self as axum_extra;
 
 pub mod body;
 pub mod either;
 pub mod extract;
 pub mod handler;
+pub mod middleware;
 pub mod response;
 pub mod routing;
 
@@ -92,6 +97,9 @@ pub mod __private {
     const PATH: &AsciiSet = &FRAGMENT.add(b'#').add(b'?').add(b'{').add(b'}');
     pub const PATH_SEGMENT: &AsciiSet = &PATH.add(b'/').add(b'%');
 }
+
+#[cfg(test)]
+use axum_macros::__private_axum_test as test;
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

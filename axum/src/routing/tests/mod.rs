@@ -4,23 +4,30 @@ use crate::{
     extract::{self, DefaultBodyLimit, FromRef, Path, State},
     handler::{Handler, HandlerWithoutStateExt},
     response::IntoResponse,
-    routing::{delete, get, get_service, on, on_service, patch, patch_service, post, MethodFilter},
-    test_helpers::*,
-    BoxError, Json, Router,
+    routing::{
+        delete, get, get_service, on, on_service, patch, patch_service,
+        path_router::path_for_nested_route, post, MethodFilter,
+    },
+    test_helpers::{
+        tracing_helpers::{capture_tracing, TracingEvent},
+        *,
+    },
+    BoxError, Extension, Json, Router,
 };
 use futures_util::stream::StreamExt;
 use http::{header::ALLOW, header::CONTENT_LENGTH, HeaderMap, Request, Response, StatusCode, Uri};
 use hyper::Body;
+use serde::Deserialize;
 use serde_json::json;
 use std::{
     convert::Infallible,
     future::{ready, Ready},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Context, Poll},
     time::Duration,
 };
 use tower::{service_fn, timeout::TimeoutLayer, util::MapResponseLayer, ServiceBuilder};
-use tower_http::{auth::RequireAuthorizationLayer, limit::RequestBodyLimitLayer};
+use tower_http::{limit::RequestBodyLimitLayer, validate_request::ValidateRequestHeaderLayer};
 use tower_service::Service;
 
 mod fallback;
@@ -381,6 +388,34 @@ async fn wildcard_doesnt_match_just_trailing_slash() {
 }
 
 #[crate::test]
+async fn what_matches_wildcard() {
+    let app = Router::new()
+        .route("/*key", get(|| async { "root" }))
+        .route("/x/*key", get(|| async { "x" }))
+        .fallback(|| async { "fallback" });
+
+    let client = TestClient::new(app);
+
+    let get = |path| {
+        let f = client.get(path).send();
+        async move { f.await.text().await }
+    };
+
+    assert_eq!(get("/").await, "fallback");
+    assert_eq!(get("/a").await, "root");
+    assert_eq!(get("/a/").await, "root");
+    assert_eq!(get("/a/b").await, "root");
+    assert_eq!(get("/a/b/").await, "root");
+
+    assert_eq!(get("/x").await, "root");
+    assert_eq!(get("/x/").await, "root");
+    assert_eq!(get("/x/a").await, "x");
+    assert_eq!(get("/x/a/").await, "x");
+    assert_eq!(get("/x/a/b").await, "x");
+    assert_eq!(get("/x/a/b/").await, "x");
+}
+
+#[crate::test]
 async fn static_and_dynamic_paths() {
     let app = Router::new()
         .route(
@@ -458,7 +493,7 @@ async fn routing_to_router_panics() {
 async fn route_layer() {
     let app = Router::new()
         .route("/foo", get(|| async {}))
-        .route_layer(RequireAuthorizationLayer::bearer("password"));
+        .route_layer(ValidateRequestHeaderLayer::bearer("password"));
 
     let client = TestClient::new(app);
 
@@ -522,7 +557,7 @@ fn routes_with_overlapping_method_routes() {
 fn merging_with_overlapping_method_routes() {
     async fn handler() {}
     let app: Router = Router::new().route("/foo/bar", get(handler));
-    app.clone().merge(app);
+    _ = app.clone().merge(app);
 }
 
 #[crate::test]
@@ -573,7 +608,10 @@ async fn head_with_middleware_applied() {
     use tower_http::compression::{predicate::SizeAbove, CompressionLayer};
 
     let app = Router::new()
-        .route("/", get(|| async { "Hello, World!" }))
+        .nest(
+            "/",
+            Router::new().route("/", get(|| async { "Hello, World!" })),
+        )
         .layer(CompressionLayer::new().compress_when(SizeAbove::new(0)));
 
     let client = TestClient::new(app);
@@ -798,4 +836,151 @@ async fn layer_response_into_response() {
     let res = client.get("/").send().await;
     assert_eq!(res.headers()["x-foo"], "bar");
     assert_eq!(res.status(), StatusCode::IM_A_TEAPOT);
+}
+
+#[allow(dead_code)]
+fn method_router_fallback_with_state() {
+    async fn fallback(_: State<&'static str>) {}
+
+    async fn not_found(_: State<&'static str>) {}
+
+    let state = "foo";
+
+    let _: Router = Router::new()
+        .fallback(get(fallback).fallback(not_found))
+        .with_state(state);
+}
+
+#[test]
+fn test_path_for_nested_route() {
+    assert_eq!(path_for_nested_route("/", "/"), "/");
+
+    assert_eq!(path_for_nested_route("/a", "/"), "/a");
+    assert_eq!(path_for_nested_route("/", "/b"), "/b");
+    assert_eq!(path_for_nested_route("/a/", "/"), "/a/");
+    assert_eq!(path_for_nested_route("/", "/b/"), "/b/");
+
+    assert_eq!(path_for_nested_route("/a", "/b"), "/a/b");
+    assert_eq!(path_for_nested_route("/a/", "/b"), "/a/b");
+    assert_eq!(path_for_nested_route("/a", "/b/"), "/a/b/");
+    assert_eq!(path_for_nested_route("/a/", "/b/"), "/a/b/");
+}
+
+#[crate::test]
+async fn state_isnt_cloned_too_much() {
+    static SETUP_DONE: AtomicBool = AtomicBool::new(false);
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    struct AppState;
+
+    impl Clone for AppState {
+        fn clone(&self) -> Self {
+            #[rustversion::since(1.65)]
+            #[track_caller]
+            fn count() {
+                if SETUP_DONE.load(Ordering::SeqCst) {
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    let bt = bt
+                        .to_string()
+                        .lines()
+                        .filter(|line| line.contains("axum") || line.contains("./src"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    println!("AppState::Clone:\n===============\n{}\n", bt);
+                    COUNT.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+
+            #[rustversion::not(since(1.65))]
+            fn count() {
+                if SETUP_DONE.load(Ordering::SeqCst) {
+                    COUNT.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+
+            count();
+
+            Self
+        }
+    }
+
+    let app = Router::new()
+        .route("/", get(|_: State<AppState>| async {}))
+        .with_state(AppState);
+
+    let client = TestClient::new(app);
+
+    // ignore clones made during setup
+    SETUP_DONE.store(true, Ordering::SeqCst);
+
+    client.get("/").send().await;
+
+    assert_eq!(COUNT.load(Ordering::SeqCst), 4);
+}
+
+#[crate::test]
+async fn logging_rejections() {
+    #[derive(Deserialize, Eq, PartialEq, Debug)]
+    #[serde(deny_unknown_fields)]
+    struct RejectionEvent {
+        message: String,
+        status: u16,
+        body: String,
+        rejection_type: String,
+    }
+
+    let events = capture_tracing::<RejectionEvent, _, _>(|| async {
+        let app = Router::new()
+            .route("/extension", get(|_: Extension<Infallible>| async {}))
+            .route("/string", post(|_: String| async {}));
+
+        let client = TestClient::new(app);
+
+        assert_eq!(
+            client.get("/extension").send().await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        assert_eq!(
+            client
+                .post("/string")
+                .body(Vec::from([0, 159, 146, 150]))
+                .send()
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+        );
+    })
+    .await;
+
+    assert_eq!(
+        dbg!(events),
+        Vec::from([
+            TracingEvent {
+                fields: RejectionEvent {
+                    message: "rejecting request".to_owned(),
+                    status: 500,
+                    body: "Missing request extension: Extension of \
+                        type `core::convert::Infallible` was not found. \
+                        Perhaps you forgot to add it? See `axum::Extension`."
+                        .to_owned(),
+                    rejection_type: "axum::extract::rejection::MissingExtension".to_owned(),
+                },
+                target: "axum::rejection".to_owned(),
+                level: "TRACE".to_owned(),
+            },
+            TracingEvent {
+                fields: RejectionEvent {
+                    message: "rejecting request".to_owned(),
+                    status: 400,
+                    body: "Request body didn't contain valid UTF-8: \
+                        invalid utf-8 sequence of 1 bytes from index 1"
+                        .to_owned(),
+                    rejection_type: "axum_core::extract::rejection::InvalidUtf8".to_owned(),
+                },
+                target: "axum::rejection".to_owned(),
+                level: "TRACE".to_owned(),
+            },
+        ])
+    )
 }
